@@ -1,4 +1,10 @@
-import { DriftState, GeofenceService } from '../services/GeofenceService';
+import { DriftState } from '../common/DriftState';
+import { GeofenceService } from '../services/GeofenceService';
+import { AppConfig } from '../config/AppConfig';
+import { MotionDetector } from '../services/MotionDetector';
+import { MockMotionDetector } from '../services/MockMotionDetector';
+import { RealMotionDetector } from '../services/RealMotionDetector';
+import { FallDetector, MockFallDetector, RealFallDetector } from '../services/FallDetector';
 import common from '@ohos.app.ability.common';
 import geoLocationManager from '@ohos.geoLocationManager';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -24,13 +30,20 @@ struct Index {
   @State private page: AppPage = AppPage.MENU;
 
   // --- Geofence state ---
-  // distanceMetres starts at 0 — only updated by real GPS, never hardcoded
-  @State private driftState: DriftState = DriftState.SAFE;
+  // NOT_SET is the correct initial value — SAFE must never show without a confirmed anchor.
+  @State private driftState: DriftState = DriftState.NOT_SET;
   @State private distanceMetres: number = 0;
-  @State private bearing: number = 0;         // radians, clockwise from north
+  @State private bearing: number = 0;              // radians, clockwise from north
   @State private hasAnchor: boolean = false;
-  @State private hasReceivedFix: boolean = false; // true once first real GPS update arrives
+  @State private hasReceivedFix: boolean = false;  // true once a real GPS update arrives
   @State private isFallDetected: boolean = false;
+
+  // Epoch ms of the last successful GPS fix — shown as "Updated HH:MM:SS" in the UI.
+  @State private lastUpdateTime: number = 0;
+
+  // GPS accuracy (metres) from the last fix on the Set Fence screen.
+  // -1 means no fix has been obtained yet on this screen session.
+  @State private gpsAccuracy: number = -1;
 
   // --- Check Location page ---
   @State private currentLat: number = 0;
@@ -41,6 +54,11 @@ struct Index {
   // --- Set Fence page ---
   @State private isSettingAnchor: boolean = false;
 
+  // --- Debug panel ---
+  // Shown only when the caregiver long-presses (3 s) the ANCHOR title on the menu screen.
+  // Never visible during a normal demo session.
+  @State private isDebugVisible: boolean = false;
+
   // --- Canvas ---
   private renderCfg: RenderingContextSettings = new RenderingContextSettings(true);
   private homeCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.renderCfg);
@@ -50,6 +68,12 @@ struct Index {
 
   private geofenceService: GeofenceService | null = null;
 
+  // Concrete mock detector references — needed by the debug panel to call
+  // simulateWalking() / simulateStill() / simulateFall() which are not on the interface.
+  // null when IS_EMULATOR is false (real device uses real detectors without these methods).
+  private mockMotion: MockMotionDetector | null = null;
+  private mockFall: MockFallDetector | null = null;
+
   // ------------------------------------------------------------------
   // Lifecycle
   // ------------------------------------------------------------------
@@ -57,17 +81,37 @@ struct Index {
   aboutToAppear(): void {
     const context = getContext(this) as common.UIAbilityContext;
 
+    // Choose the right detectors based on build target.
+    // Emulator: mock detectors (no sensor hardware). Real watch: real detectors.
+    let motionDet: MotionDetector;
+    let fallDet: FallDetector;
+
+    if (AppConfig.IS_EMULATOR) {
+      const mockM = new MockMotionDetector();
+      const mockF = new MockFallDetector();
+      this.mockMotion = mockM;
+      this.mockFall = mockF;
+      motionDet = mockM;
+      fallDet = mockF;
+    } else {
+      motionDet = new RealMotionDetector();
+      fallDet = new RealFallDetector();
+    }
+
     this.geofenceService = new GeofenceService(
       context,
-      // State change callback — bearing is now included so the map is accurate
       (state: DriftState, distance: number, brng: number) => {
         this.driftState = state;
         this.distanceMetres = distance;
         this.bearing = brng;
         this.hasReceivedFix = true;
+        // Record the time of every state update so the "Updated at" label stays current.
+        this.lastUpdateTime = Date.now();
         this.redrawCanvases();
       },
-      () => { this.isFallDetected = true; }
+      () => { this.isFallDetected = true; },
+      motionDet,
+      fallDet
     );
 
     this.geofenceService.init().then(() => {
@@ -109,16 +153,21 @@ struct Index {
   private setHomePoint(): void {
     if (!this.locationEnabled()) return;
     this.isSettingAnchor = true;
+    this.gpsAccuracy = -1; // reset accuracy until new fix arrives
 
     geoLocationManager.getCurrentLocation(this.makeLocationRequest())
       .then((location: geoLocationManager.Location) => {
+        // Store GPS accuracy so the UI can show "±Xm" to the caregiver.
+        this.gpsAccuracy = location.accuracy;
+
         this.geofenceService?.setAnchorPoint(location.latitude, location.longitude)
           .then(() => {
             this.isSettingAnchor = false;
             this.hasAnchor = true;
-            // Snap distance to 0 — the new anchor IS the current position
+            // Snap distance to 0 — the new anchor IS the current position.
             this.distanceMetres = 0;
             this.bearing = 0;
+            this.lastUpdateTime = Date.now();
             this.redrawCanvases();
             hilog.info(DOMAIN, 'Index', 'Anchor set at %{public}f, %{public}f',
               location.latitude, location.longitude);
@@ -164,12 +213,12 @@ struct Index {
     }
   }
 
-  // Draws geofence radar:
+  // Draws the geofence radar:
   //   green fill = safe zone (30 m)
   //   amber ring = 30 m drifting boundary
   //   red dashed ring = 50 m alert boundary
   //   white dot = home / anchor (always at centre)
-  //   coloured dot = user, placed at real bearing + scaled distance
+  //   coloured dot = user at real bearing + scaled distance from GPS
   private drawMap(ctx: CanvasRenderingContext2D, size: number): void {
     const cx = size / 2;
     const cy = size / 2;
@@ -237,13 +286,18 @@ struct Index {
   // Helpers
   // ------------------------------------------------------------------
 
+  // Returns the display label for the current drift state.
+  // NOT_SET is the no-anchor state — must never show SAFE without a real anchor.
   private statusLabel(): string {
+    if (this.driftState === DriftState.NOT_SET) return 'Setup Required';
     if (this.driftState === DriftState.SAFE) return 'SAFE';
-    if (this.driftState === DriftState.DRIFTING) return 'HEADING AWAY';
-    return 'ALERT!';
+    if (this.driftState === DriftState.DRIFTING) return 'DRIFTING';
+    return 'ALERT';
   }
 
+  // Returns the hex colour for the current drift state.
   private statusColor(): string {
+    if (this.driftState === DriftState.NOT_SET) return '#9CA3AF'; // grey — neutral, not alarming
     if (this.driftState === DriftState.SAFE) return '#4ADE80';
     if (this.driftState === DriftState.DRIFTING) return '#FBBF24';
     return '#F87171';
@@ -254,6 +308,17 @@ struct Index {
     if (!this.hasReceivedFix) return 'Measuring...';
     if (this.distanceMetres < 5) return 'At home';
     return `${Math.round(this.distanceMetres)} m from home`;
+  }
+
+  // Formats the last GPS update time as "Updated HH:MM:SS".
+  // Returns empty string if no update has been received yet.
+  private lastUpdateLabel(): string {
+    if (this.lastUpdateTime === 0) return '';
+    const date = new Date(this.lastUpdateTime);
+    const h = date.getHours().toString().padStart(2, '0');
+    const m = date.getMinutes().toString().padStart(2, '0');
+    const s = date.getSeconds().toString().padStart(2, '0');
+    return `Updated ${h}:${m}:${s}`;
   }
 
   private formatCoord(value: number, pos: string, neg: string): string {
@@ -267,6 +332,7 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.Center }) {
 
+      // Page content layer
       if (this.page === AppPage.MENU) {
         this.MenuPage();
       } else if (this.page === AppPage.HOME) {
@@ -277,6 +343,12 @@ struct Index {
         this.CheckLocationPage();
       }
 
+      // Debug panel — above page content, below fall overlay
+      if (this.isDebugVisible) {
+        this.DebugPanel();
+      }
+
+      // Fall overlay — highest layer, always blocks everything underneath
       if (this.isFallDetected) {
         this.FallOverlay();
       }
@@ -288,18 +360,28 @@ struct Index {
   }
 
   // ------------------------------------------------------------------
-  // Menu — default view
+  // Menu — default view, primary status display
   // ------------------------------------------------------------------
   @Builder
   MenuPage() {
     Column({ space: 9 }) {
 
+      // ANCHOR title — long-press 3 s to reveal the hidden debug panel.
+      // The gesture fires onAction after the press duration is met.
       Text('ANCHOR')
         .fontSize(15)
         .fontWeight(FontWeight.Bold)
         .fontColor('#FFFFFF')
+        .gesture(
+          LongPressGesture({ duration: 3000, repeat: false })
+            .onAction(() => {
+              hilog.info(DOMAIN, 'Index', 'Debug panel unlocked via long-press');
+              this.isDebugVisible = true;
+            })
+        )
 
-      // Live state badge — colour changes with drift state
+      // Live state badge — colour and label reflect current drift state.
+      // NOT_SET shows grey so the caregiver immediately knows setup is needed.
       Row({ space: 4 }) {
         Text('●')
           .fontSize(9)
@@ -313,8 +395,9 @@ struct Index {
       .borderRadius(10)
       .backgroundColor(this.statusColor() + '20')
 
-      // Home — colour reflects live state so caregiver sees alert at a glance
-      Button('Home')
+      // "Status" button renamed from "Home" — shows live drift state colour so
+      // the caregiver sees an alert at a glance without opening the screen.
+      Button('Status')
         .fontSize(13)
         .fontWeight(FontWeight.Medium)
         .fontColor('#0D0D0D')
@@ -332,7 +415,11 @@ struct Index {
         .width('72%')
         .height(38)
         .borderRadius(19)
-        .onClick(() => { this.page = AppPage.SET_FENCE; })
+        .onClick(() => {
+          this.locationError = '';
+          this.gpsAccuracy = -1;
+          this.page = AppPage.SET_FENCE;
+        })
 
       Button('Check Location')
         .fontSize(13)
@@ -347,12 +434,8 @@ struct Index {
           this.page = AppPage.CHECK_LOCATION;
         })
 
-      // Demo-only: lets you test the fall overlay without real accelerometer data
-      Text('Simulate Fall')
-        .fontSize(10)
-        .fontColor('#3A3A3A')
-        .padding({ top: 2, bottom: 2 })
-        .onClick(() => { this.isFallDetected = true; })
+      // "Simulate Fall" button intentionally removed from this screen.
+      // Access it via the debug panel (long-press ANCHOR title for 3 s).
 
     }
     .width('100%')
@@ -363,7 +446,7 @@ struct Index {
   }
 
   // ------------------------------------------------------------------
-  // Home — status + distance + live radar
+  // Home (Status) — live status card + radar
   // ------------------------------------------------------------------
   @Builder
   HomePage() {
@@ -371,31 +454,62 @@ struct Index {
 
       this.BackButton();
 
+      // Main status label — large, high-contrast, immediately readable
       Text(this.statusLabel())
         .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.statusColor())
 
-      Text(this.distanceLabel())
-        .fontSize(12)
-        .fontColor('#FFFFFF')
+      if (this.driftState === DriftState.NOT_SET) {
+        // No anchor configured — guide the caregiver to set one
+        Text('Set a home point first')
+          .fontSize(11)
+          .fontColor('#9CA3AF')
+          .textAlign(TextAlign.Center)
 
-      Canvas(this.homeCtx)
-        .width(HOME_CANVAS)
-        .height(HOME_CANVAS)
-        .borderRadius(HOME_CANVAS / 2)
-        .onReady(() => {
-          this.homeCanvasReady = true;
-          this.drawMap(this.homeCtx, HOME_CANVAS);
-        })
+        Button('Set Fence')
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#0D0D0D')
+          .backgroundColor('#9CA3AF')
+          .width('68%')
+          .height(34)
+          .borderRadius(17)
+          .onClick(() => {
+            this.locationError = '';
+            this.gpsAccuracy = -1;
+            this.page = AppPage.SET_FENCE;
+          })
+      } else {
+        // Anchor exists — show distance and last update time
+        Text(this.distanceLabel())
+          .fontSize(12)
+          .fontColor('#FFFFFF')
 
-      Row({ space: 10 }) {
-        Text('— 30 m')
-          .fontSize(9)
-          .fontColor('#FBBF24')
-        Text('- - 50 m')
-          .fontSize(9)
-          .fontColor('#F87171')
+        // "Updated HH:MM:SS" — tells caregiver when the last GPS fix arrived
+        if (this.lastUpdateLabel() !== '') {
+          Text(this.lastUpdateLabel())
+            .fontSize(10)
+            .fontColor('#666666')
+        }
+
+        Canvas(this.homeCtx)
+          .width(HOME_CANVAS)
+          .height(HOME_CANVAS)
+          .borderRadius(HOME_CANVAS / 2)
+          .onReady(() => {
+            this.homeCanvasReady = true;
+            this.drawMap(this.homeCtx, HOME_CANVAS);
+          })
+
+        Row({ space: 10 }) {
+          Text('— 30 m')
+            .fontSize(9)
+            .fontColor('#FBBF24')
+          Text('- - 50 m')
+            .fontSize(9)
+            .fontColor('#F87171')
+        }
       }
 
     }
@@ -407,7 +521,7 @@ struct Index {
   }
 
   // ------------------------------------------------------------------
-  // Set Fence — anchor setup + radar
+  // Set Fence — anchor setup with GPS status check
   // ------------------------------------------------------------------
   @Builder
   SetFencePage() {
@@ -419,6 +533,29 @@ struct Index {
         .fontSize(14)
         .fontWeight(FontWeight.Bold)
         .fontColor('#FFFFFF')
+
+      // GPS enabled status — shown before the button so the caregiver knows
+      // whether a fix is likely before they tap.
+      if (!geoLocationManager.isLocationEnabled()) {
+        Text('GPS is off — enable Location in Settings')
+          .fontSize(10)
+          .fontColor('#F87171')
+          .textAlign(TextAlign.Center)
+          .width('85%')
+      } else if (this.gpsAccuracy > 0) {
+        // Show accuracy after a successful fix
+        Text(`GPS ready — accuracy ±${Math.round(this.gpsAccuracy)} m`)
+          .fontSize(10)
+          .fontColor('#4ADE80')
+          .textAlign(TextAlign.Center)
+          .width('85%')
+      } else {
+        Text('GPS available — tap to set home point')
+          .fontSize(10)
+          .fontColor('#9CA3AF')
+          .textAlign(TextAlign.Center)
+          .width('85%')
+      }
 
       Text(this.hasAnchor ? '● Home point set' : '○ No home point')
         .fontSize(11)
@@ -433,7 +570,7 @@ struct Index {
           this.drawMap(this.fenceCtx, FENCE_CANVAS);
         })
 
-      // Error message if GPS failed
+      // Error message if GPS failed or is off
       if (this.locationError !== '') {
         Text(this.locationError)
           .fontSize(10)
@@ -442,16 +579,16 @@ struct Index {
           .width('85%')
       }
 
-      // Label changes once anchor is already set
+      // Disable button if GPS is off or a fix is in progress
       Button(this.isSettingAnchor ? 'Locating...' : (this.hasAnchor ? 'Reset Home Point' : 'Set Home Point'))
         .fontSize(13)
         .fontWeight(FontWeight.Medium)
         .fontColor('#0D0D0D')
-        .backgroundColor('#4ADE80')
+        .backgroundColor(geoLocationManager.isLocationEnabled() ? '#4ADE80' : '#3A3A3A')
         .width('78%')
         .height(38)
         .borderRadius(19)
-        .enabled(!this.isSettingAnchor)
+        .enabled(!this.isSettingAnchor && geoLocationManager.isLocationEnabled())
         .onClick(() => { this.setHomePoint(); })
 
     }
@@ -463,11 +600,10 @@ struct Index {
   }
 
   // ------------------------------------------------------------------
-  // Check Location — scrollable, live GPS coordinates
+  // Check Location — live GPS + drift state + instructions if no anchor
   // ------------------------------------------------------------------
   @Builder
   CheckLocationPage() {
-    // Scroll wrapper so content never clips on smaller watch faces
     Scroll() {
       Column({ space: 8 }) {
 
@@ -478,8 +614,35 @@ struct Index {
           .fontWeight(FontWeight.Bold)
           .fontColor('#FFFFFF')
 
-        if (this.isFetchingLocation) {
-          // Loading state — friendly copy, no technical jargon
+        // If no anchor: guide the caregiver to set one instead of showing raw GPS
+        if (!this.hasAnchor) {
+          Text('No home point set')
+            .fontSize(13)
+            .fontColor('#9CA3AF')
+            .fontWeight(FontWeight.Medium)
+            .textAlign(TextAlign.Center)
+
+          Text('Go to Set Fence to anchor a home point first.')
+            .fontSize(10)
+            .fontColor('#666666')
+            .textAlign(TextAlign.Center)
+            .width('85%')
+
+          Button('Set Fence')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#0D0D0D')
+            .backgroundColor('#9CA3AF')
+            .width('68%')
+            .height(34)
+            .borderRadius(17)
+            .onClick(() => {
+              this.locationError = '';
+              this.gpsAccuracy = -1;
+              this.page = AppPage.SET_FENCE;
+            })
+        } else if (this.isFetchingLocation) {
+          // Loading state
           Column({ space: 6 }) {
             LoadingProgress()
               .width(28)
@@ -497,7 +660,6 @@ struct Index {
             .textAlign(TextAlign.Center)
             .width('85%')
         } else if (this.currentLat === 0 && this.currentLng === 0) {
-          // Triggered first time before any fetch completes
           Column({ space: 6 }) {
             LoadingProgress()
               .width(28)
@@ -509,43 +671,51 @@ struct Index {
               .textAlign(TextAlign.Center)
           }
         } else {
-          // Coordinates
-          Text(this.formatCoord(this.currentLat, 'N', 'S'))
-            .fontSize(12)
-            .fontColor('#FFFFFF')
-            .fontWeight(FontWeight.Medium)
-          Text(this.formatCoord(this.currentLng, 'E', 'W'))
+          // Current drift state — colour-coded for instant recognition
+          Row({ space: 4 }) {
+            Text('●')
+              .fontSize(10)
+              .fontColor(this.statusColor())
+            Text(this.statusLabel())
+              .fontSize(12)
+              .fontColor(this.statusColor())
+              .fontWeight(FontWeight.Bold)
+          }
+
+          // Distance readout
+          Text(this.distanceLabel())
             .fontSize(12)
             .fontColor('#FFFFFF')
             .fontWeight(FontWeight.Medium)
 
-          // Live distance from anchor — uses real GPS, not hardcoded
-          if (this.hasAnchor) {
-            Text(this.distanceLabel())
-              .fontSize(12)
-              .fontColor(this.statusColor())
-              .fontWeight(FontWeight.Medium)
+          // GPS coordinates
+          Text(this.formatCoord(this.currentLat, 'N', 'S'))
+            .fontSize(11)
+            .fontColor('#AAAAAA')
+          Text(this.formatCoord(this.currentLng, 'E', 'W'))
+            .fontSize(11)
+            .fontColor('#AAAAAA')
+
+          // Last update time
+          if (this.lastUpdateLabel() !== '') {
+            Text(this.lastUpdateLabel())
+              .fontSize(10)
+              .fontColor('#555555')
           }
         }
 
-        // Error text below GPS result (e.g. after a failed refresh)
-        if (!this.isFetchingLocation && this.locationError !== '' && this.currentLat !== 0) {
-          Text(this.locationError)
-            .fontSize(10)
-            .fontColor('#F87171')
-            .textAlign(TextAlign.Center)
-            .width('85%')
+        // Refresh button — always shown (except while fetching) when anchor exists
+        if (this.hasAnchor) {
+          Button(this.isFetchingLocation ? 'Refreshing…' : 'Refresh')
+            .fontSize(12)
+            .fontColor('#FFFFFF')
+            .backgroundColor('#1E1E1E')
+            .width('58%')
+            .height(34)
+            .borderRadius(17)
+            .enabled(!this.isFetchingLocation)
+            .onClick(() => { this.fetchCurrentLocation(); })
         }
-
-        Button(this.isFetchingLocation ? 'Refreshing…' : 'Refresh')
-          .fontSize(12)
-          .fontColor('#FFFFFF')
-          .backgroundColor('#1E1E1E')
-          .width('58%')
-          .height(34)
-          .borderRadius(17)
-          .enabled(!this.isFetchingLocation)
-          .onClick(() => { this.fetchCurrentLocation(); })
 
       }
       .width('100%')
@@ -571,39 +741,131 @@ struct Index {
   }
 
   // ------------------------------------------------------------------
-  // Fall overlay
+  // Fall overlay — full-screen blocking, no tap-through
   // ------------------------------------------------------------------
   @Builder
   FallOverlay() {
-    Column({ space: 12 }) {
+    Column({ space: 14 }) {
 
       Text('FALL DETECTED')
-        .fontSize(19)
+        .fontSize(20)
         .fontWeight(FontWeight.Bold)
-        .fontColor('#FFFFFF')
+        .fontColor('#F87171')
         .textAlign(TextAlign.Center)
 
       Text('Caregiver alerted.')
-        .fontSize(12)
-        .fontColor('#FFCCCC')
+        .fontSize(13)
+        .fontColor('#FFFFFF')
         .textAlign(TextAlign.Center)
 
+      // Large button — minimum 60×60dp tap target, hard to miss under stress
       Button('Dismiss')
-        .fontSize(13)
+        .fontSize(14)
         .fontWeight(FontWeight.Bold)
         .fontColor('#0D0D0D')
         .backgroundColor('#F87171')
-        .width('58%')
-        .height(40)
-        .borderRadius(20)
+        .width('65%')
+        .height(52)
+        .borderRadius(26)
         .onClick(() => { this.isFallDetected = false; })
 
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#EE000000')
+    // Solid near-opaque background — blocks the page content visually
+    .backgroundColor('#F2000000')
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .padding(18)
+    .padding(20)
+    // Block ALL touch events from reaching elements underneath this overlay.
+    // This is the fix for the "buttons visible and tappable behind overlay" bug.
+    .hitTestBehavior(HitTestMode.Block)
+  }
+
+  // ------------------------------------------------------------------
+  // Debug panel — hidden, slide-up overlay from bottom
+  // Only accessible by long-pressing the ANCHOR title for 3 seconds.
+  // Must NOT be visible during the hackathon demo unless deliberately triggered.
+  // ------------------------------------------------------------------
+  @Builder
+  DebugPanel() {
+    Column({ space: 0 }) {
+
+      // Transparent upper area — tapping it closes the debug panel
+      Column()
+        .width('100%')
+        .layoutWeight(1)
+        .onClick(() => { this.isDebugVisible = false; })
+
+      // Panel content — slides in from bottom
+      Column({ space: 10 }) {
+
+        Text('⚙ Debug Panel')
+          .fontSize(12)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#FFFFFF')
+          .padding({ bottom: 4 })
+
+        // Simulate Walking — sets mock motion state to walking.
+        // Combined with GPS drift via emulator toolbar triggers DRIFTING / ALERT.
+        Button('Simulate Walking')
+          .fontSize(12)
+          .fontColor('#0D0D0D')
+          .backgroundColor('#FBBF24')
+          .width('80%')
+          .height(40)
+          .borderRadius(20)
+          .onClick(() => {
+            this.mockMotion?.simulateWalking();
+          })
+
+        // Simulate Still — resets mock motion to still.
+        // Returns state to SAFE (distance permitting).
+        Button('Simulate Still')
+          .fontSize(12)
+          .fontColor('#0D0D0D')
+          .backgroundColor('#4ADE80')
+          .width('80%')
+          .height(40)
+          .borderRadius(20)
+          .onClick(() => {
+            this.mockMotion?.simulateStill();
+          })
+
+        // Simulate Fall — fires the fall overlay and caregiver notification.
+        // Works independently of geofence state.
+        Button('Simulate Fall')
+          .fontSize(12)
+          .fontColor('#FFFFFF')
+          .backgroundColor('#F87171')
+          .width('80%')
+          .height(40)
+          .borderRadius(20)
+          .onClick(() => {
+            this.mockFall?.simulateFall();
+          })
+
+        Button('Close Debug')
+          .fontSize(11)
+          .fontColor('#666666')
+          .backgroundColor('#1A1A1A')
+          .width('80%')
+          .height(34)
+          .borderRadius(17)
+          .onClick(() => { this.isDebugVisible = false; })
+
+      }
+      .width('100%')
+      .backgroundColor('#111111')
+      .borderRadius(14)
+      .padding({ left: 16, right: 16, top: 14, bottom: 20 })
+      .alignItems(HorizontalAlign.Center)
+
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.End)
+    .backgroundColor('#80000000')  // semi-transparent scrim behind panel
+    .hitTestBehavior(HitTestMode.Block)
   }
 }

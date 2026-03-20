@@ -1,11 +1,23 @@
+// GeofenceService.ets
+// Core business logic for ANCHOR. Combines GPS and motion detection to determine
+// the patient's drift state and alert caregivers when necessary.
+//
+// This service consumes sensor data exclusively through the MotionDetector and
+// FallDetector interfaces — it never imports @ohos.sensor directly. This allows
+// the same logic to run on both the real watch (real detectors) and the emulator
+// (mock detectors), toggled by AppConfig.IS_EMULATOR.
+
 import geoLocationManager from '@ohos.geoLocationManager';
 import vibrator from '@ohos.vibrator';
-import sensor from '@ohos.sensor';
-import { notificationManager } from '@kit.NotificationKit';
-import notification from '@ohos.notification'; // needed for ContentType — NotificationContent.contentType is typed against the older @ohos.notification.ContentType in this SDK
 import preferences from '@ohos.data.preferences';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import common from '@ohos.app.ability.common';
+
+import { DriftState } from '../common/DriftState';
+import { AppConfig } from '../config/AppConfig';
+import { MotionDetector, MotionEvent } from './MotionDetector';
+import { FallDetector, FallEvent } from './FallDetector';
+import { NotificationService } from './NotificationService';
 
 const DOMAIN = 0x0000;
 const PREFS_STORE = 'AnchorPrefs';
@@ -13,44 +25,14 @@ const KEY_ANCHOR_LAT = 'anchorLat';
 const KEY_ANCHOR_LNG = 'anchorLng';
 const KEY_PATIENT_NAME = 'patientName';
 
-// --- Tunable thresholds ---
-
-// Distance from anchor (metres) at which DRIFTING starts (requires motion too)
-const DRIFTING_RADIUS_M = 30;
-// Distance from anchor (metres) at which ALERT fires (requires motion too)
-const ALERT_RADIUS_M = 50;
-
-// GPS polling intervals (seconds) — slow at rest to save battery
-const GPS_INTERVAL_ACTIVE = 10;  // when accelerometer detects walking
-const GPS_INTERVAL_REST = 60;    // when still
-
-// Net acceleration above gravity baseline (m/s²) to classify as "moving"
-const MOTION_NET_THRESHOLD = 1.2;
-// Number of accelerometer samples to average for sustained motion detection
-const MOTION_SAMPLE_WINDOW = 10;
-
-// Total acceleration spike (m/s²) that may indicate a fall (~2.5g)
-const FALL_G_THRESHOLD = 25;
-// If stillness follows within this window (ms) after a spike, confirm fall
-const FALL_STILLNESS_MS = 2000;
-// Near-stillness threshold: net accel below this counts as "still"
-const FALL_STILLNESS_NET = 0.5;
-
 // --- Public types ---
-
-// The three states the geofence can be in
-export enum DriftState {
-  SAFE = 'SAFE',
-  DRIFTING = 'DRIFTING',
-  ALERT = 'ALERT'
-}
 
 export interface AnchorPoint {
   latitude: number;
   longitude: number;
 }
 
-// Callbacks the UI registers to receive updates.
+// Callback the UI registers to receive state + distance + bearing on every GPS update.
 // bearing: clockwise radians from north — used by the canvas to position the user dot.
 export type StateChangeCallback = (state: DriftState, distanceMetres: number, bearing: number) => void;
 export type FallDetectedCallback = () => void;
@@ -60,38 +42,45 @@ export type FallDetectedCallback = () => void;
 export class GeofenceService {
   private context: common.UIAbilityContext;
   private anchorPoint: AnchorPoint | null = null;
-  private currentState: DriftState = DriftState.SAFE;
 
-  // True when the accelerometer has detected sustained walking movement
+  // Start as NOT_SET — never assume SAFE until an anchor exists and GPS confirms it.
+  private currentState: DriftState = DriftState.NOT_SET;
+
+  // True when the MotionDetector has reported sustained walking movement.
+  // Updated via the motionDetector callback, read by evaluateDriftState.
   private isMotionDetected: boolean = false;
 
-  // Rolling window of net-acceleration samples for motion averaging
-  private motionSamples: number[] = [];
-
-  // Timestamp of the last high-G spike (ms) — used for fall detection
-  private lastHighGTime: number = 0;
-
-  // Most recent GPS fix — included in fall alert messages
+  // Most recent GPS fix — included in fall alert messages.
   private lastKnownLocation: geoLocationManager.Location | null = null;
 
-  // Patient name loaded from preferences — shown in alert messages
+  // Patient name loaded from preferences — shown in alert messages.
   private patientName: string = 'Your family member';
 
-  // Reference to the active location listener so we can unsubscribe
+  // Reference to the active GPS listener so we can unsubscribe.
   private locationListener: ((location: geoLocationManager.Location) => void) | null = null;
 
-  // Callbacks provided by the UI
+  // Motion and fall detectors — injected at construction time.
+  // GeofenceService never creates these itself; the caller (Index.ets) decides
+  // which implementation to use based on AppConfig.IS_EMULATOR.
+  private motionDetector: MotionDetector;
+  private fallDetector: FallDetector;
+
+  // Callbacks provided by the UI.
   private onStateChange: StateChangeCallback;
   private onFallDetected: FallDetectedCallback;
 
   constructor(
     context: common.UIAbilityContext,
     onStateChange: StateChangeCallback,
-    onFallDetected: FallDetectedCallback
+    onFallDetected: FallDetectedCallback,
+    motionDetector: MotionDetector,
+    fallDetector: FallDetector
   ) {
     this.context = context;
     this.onStateChange = onStateChange;
     this.onFallDetected = onFallDetected;
+    this.motionDetector = motionDetector;
+    this.fallDetector = fallDetector;
   }
 
   // ------------------------------------------------------------------
@@ -99,30 +88,40 @@ export class GeofenceService {
   // ------------------------------------------------------------------
 
   // Load a previously saved anchor point from persistent storage.
-  // Call this once when the app starts before startMonitoring().
+  // Call this once when the app starts, before startMonitoring().
   async init(): Promise<void> {
     try {
       const store = await preferences.getPreferences(this.context, PREFS_STORE);
       const lat = await store.get(KEY_ANCHOR_LAT, 0) as number;
       const lng = await store.get(KEY_ANCHOR_LNG, 0) as number;
+
       if (lat !== 0 && lng !== 0) {
         this.anchorPoint = { latitude: lat, longitude: lng };
         hilog.info(DOMAIN, 'GeofenceService', 'Anchor loaded: %{public}s', JSON.stringify(this.anchorPoint));
+        // Emit SAFE immediately so the UI shows a correct state on restart
+        // rather than staying on NOT_SET until the first GPS update (up to 60s).
+        // Distance 0 is a placeholder — GPS will update it on the next fix.
+        this.currentState = DriftState.SAFE;
+        this.onStateChange(DriftState.SAFE, 0, 0);
       } else {
-        hilog.info(DOMAIN, 'GeofenceService', 'No saved anchor found — first-run setup needed');
+        hilog.info(DOMAIN, 'GeofenceService', 'No saved anchor — emitting NOT_SET');
+        // Immediately tell the UI we have no anchor so it shows "Setup Required",
+        // not a stale SAFE badge from a previous session.
+        this.onStateChange(DriftState.NOT_SET, 0, 0);
       }
-      // Load patient name — used in fall alert messages
+
       const savedName = await store.get(KEY_PATIENT_NAME, '') as string;
       if (savedName !== '') {
         this.patientName = savedName;
       }
     } catch (err) {
       hilog.error(DOMAIN, 'GeofenceService', 'Failed to load anchor: %{public}s', JSON.stringify(err));
+      // On error assume no anchor — safe default is NOT_SET
+      this.onStateChange(DriftState.NOT_SET, 0, 0);
     }
   }
 
-  // Save the patient's name (called from the setup screen).
-  // Used in fall alert messages so caregivers immediately know who the alert is about.
+  // Save the patient's name — shown in fall and drift alert messages.
   async setPatientName(name: string): Promise<void> {
     this.patientName = name.trim() || 'Your family member';
     try {
@@ -134,7 +133,7 @@ export class GeofenceService {
     }
   }
 
-  // Save a new anchor point (called by caregiver tapping "Set Home Point").
+  // Save a new anchor point — called when the caregiver taps "Set Home Point".
   async setAnchorPoint(latitude: number, longitude: number): Promise<void> {
     this.anchorPoint = { latitude, longitude };
     try {
@@ -146,19 +145,22 @@ export class GeofenceService {
     } catch (err) {
       hilog.error(DOMAIN, 'GeofenceService', 'Failed to save anchor: %{public}s', JSON.stringify(err));
     }
+
+    // Anchor is now in memory. Transition to SAFE immediately so the UI doesn't
+    // stay on "Setup Required" while waiting for the next GPS update (up to 60s).
+    // Distance 0 is a placeholder — GPS will update it on the next fix.
+    this.currentState = DriftState.SAFE;
+    this.onStateChange(DriftState.SAFE, 0, 0);
   }
 
-  // Returns true if an anchor point has been set (used by UI to decide which screen to show)
   hasAnchor(): boolean {
     return this.anchorPoint !== null;
   }
 
-  // Returns the saved anchor point — used by the canvas map to position the home dot
   getAnchorPoint(): AnchorPoint | null {
     return this.anchorPoint;
   }
 
-  // Returns the most recent GPS fix — used by the canvas map to position the user dot
   getLastLocation(): geoLocationManager.Location | null {
     return this.lastKnownLocation;
   }
@@ -167,21 +169,45 @@ export class GeofenceService {
   // Monitoring lifecycle
   // ------------------------------------------------------------------
 
-  // Start accelerometer + GPS subscriptions.
-  // GPS interval depends on current motion state.
+  // Start motion detection + GPS subscriptions.
+  // Always call init() first so the anchor point is loaded.
   startMonitoring(): void {
     hilog.info(DOMAIN, 'GeofenceService', 'Starting monitoring');
-    this.startAccelerometer();
-    this.startGpsTracking(this.isMotionDetected ? GPS_INTERVAL_ACTIVE : GPS_INTERVAL_REST);
+
+    // Subscribe to motion events. The detector (mock or real) calls this callback
+    // whenever the walking state changes. We update isMotionDetected and switch
+    // GPS polling rate accordingly.
+    this.motionDetector.startMonitoring((event: MotionEvent) => {
+      const wasWalking = this.isMotionDetected;
+      this.isMotionDetected = event.isWalking;
+
+      // Switch GPS polling rate when motion state changes to save battery.
+      if (event.isWalking !== wasWalking) {
+        hilog.info(DOMAIN, 'GeofenceService',
+          'Motion changed → walking=%{public}s', String(event.isWalking));
+        const interval = event.isWalking
+          ? AppConfig.GPS_INTERVAL_ACTIVE
+          : AppConfig.GPS_INTERVAL_REST;
+        this.restartGpsTracking(interval);
+      }
+    });
+
+    // Subscribe to fall events. The detector fires once per confirmed fall.
+    // We ignore the FallEvent payload here — handleFall() uses lastKnownLocation
+    // from the GPS subscription for the most up-to-date position.
+    this.fallDetector.startMonitoring((_event: FallEvent) => {
+      this.handleFall();
+    });
+
+    // Start GPS at the rest interval — motion detector hasn't reported yet.
+    this.startGpsTracking(AppConfig.GPS_INTERVAL_REST);
   }
 
-  // Stop all sensors and location subscriptions. Call in onBackground/onDestroy.
+  // Stop all monitoring. Call in onBackground / onDestroy.
   stopMonitoring(): void {
-    try {
-      sensor.off(sensor.SensorId.ACCELEROMETER);
-    } catch (err) {
-      hilog.warn(DOMAIN, 'GeofenceService', 'Accelerometer stop failed: %{public}s', JSON.stringify(err));
-    }
+    this.motionDetector.stopMonitoring();
+    this.fallDetector.stopMonitoring();
+
     try {
       if (this.locationListener !== null) {
         geoLocationManager.off('locationChange', this.locationListener);
@@ -190,67 +216,8 @@ export class GeofenceService {
     } catch (err) {
       hilog.warn(DOMAIN, 'GeofenceService', 'GPS stop failed: %{public}s', JSON.stringify(err));
     }
+
     hilog.info(DOMAIN, 'GeofenceService', 'Monitoring stopped');
-  }
-
-  // ------------------------------------------------------------------
-  // Accelerometer (motion + fall detection)
-  // ------------------------------------------------------------------
-
-  private startAccelerometer(): void {
-    try {
-      // 'normal' interval ≈ 5 Hz — sufficient for walking detection, low power draw
-      // Explicitly typed to satisfy ArkTS arkts-no-untyped-obj-literals rule
-      const sensorOptions: sensor.Options = { interval: 'normal' };
-      sensor.on(sensor.SensorId.ACCELEROMETER, (data: sensor.AccelerometerResponse) => {
-        this.processAccelerometerData(data.x, data.y, data.z);
-      }, sensorOptions);
-      hilog.info(DOMAIN, 'GeofenceService', 'Accelerometer started');
-    } catch (err) {
-      hilog.error(DOMAIN, 'GeofenceService', 'Accelerometer start failed: %{public}s', JSON.stringify(err));
-    }
-  }
-
-  // Processes one accelerometer reading for both motion and fall detection.
-  private processAccelerometerData(x: number, y: number, z: number): void {
-    // Total vector magnitude; at rest this is ~9.8 (gravity only)
-    const magnitude = Math.sqrt(x * x + y * y + z * z);
-    // Net acceleration above gravity — represents actual body movement
-    const netAccel = Math.abs(magnitude - 9.8);
-
-    // --- Fall detection ---
-    // Pattern: sudden large spike (>FALL_G_THRESHOLD m/s²) followed by stillness
-    if (magnitude > FALL_G_THRESHOLD) {
-      this.lastHighGTime = Date.now();
-    } else if (
-      this.lastHighGTime > 0 &&
-      netAccel < FALL_STILLNESS_NET &&
-      (Date.now() - this.lastHighGTime) > FALL_STILLNESS_MS
-    ) {
-      // High-G spike happened recently, and we've now gone still — probable fall
-      hilog.warn(DOMAIN, 'GeofenceService', 'Fall signature detected');
-      this.lastHighGTime = 0; // reset so we don't re-fire on the same event
-      this.handleFall();
-    }
-
-    // --- Sustained motion detection ---
-    // Maintain a rolling window of net-acceleration samples and take the average.
-    // A single jostle won't trigger — it needs sustained movement (walking).
-    this.motionSamples.push(netAccel);
-    if (this.motionSamples.length > MOTION_SAMPLE_WINDOW) {
-      this.motionSamples.shift(); // drop the oldest sample
-    }
-    const avgNetAccel = this.motionSamples.reduce((a, b) => a + b, 0) / this.motionSamples.length;
-
-    const wasMoving = this.isMotionDetected;
-    this.isMotionDetected = avgNetAccel > MOTION_NET_THRESHOLD;
-
-    // If motion state changed, switch GPS to the appropriate polling rate
-    if (this.isMotionDetected !== wasMoving) {
-      hilog.info(DOMAIN, 'GeofenceService', 'Motion changed → %{public}s', String(this.isMotionDetected));
-      const interval = this.isMotionDetected ? GPS_INTERVAL_ACTIVE : GPS_INTERVAL_REST;
-      this.restartGpsTracking(interval);
-    }
   }
 
   // ------------------------------------------------------------------
@@ -263,10 +230,9 @@ export class GeofenceService {
       scenario: geoLocationManager.LocationRequestScenario.UNSET,
       timeInterval: intervalSeconds,
       distanceInterval: 0,
-      maxAccuracy: 100 // loose accuracy requirement — works better indoors
+      maxAccuracy: 100 // loose accuracy — works better indoors
     };
 
-    // Store the listener reference so we can remove it later
     this.locationListener = (location: geoLocationManager.Location) => {
       this.onLocationUpdate(location);
     };
@@ -279,8 +245,8 @@ export class GeofenceService {
     }
   }
 
-  // Unsubscribe the current listener and re-subscribe at a new interval.
-  // Called when motion state changes to avoid unnecessary battery drain.
+  // Unsubscribe and re-subscribe at a new interval.
+  // Called when motion state changes to switch between active and rest polling.
   private restartGpsTracking(intervalSeconds: number): void {
     try {
       if (this.locationListener !== null) {
@@ -293,13 +259,15 @@ export class GeofenceService {
     this.startGpsTracking(intervalSeconds);
   }
 
-  // Called each time a new GPS fix arrives from the system
+  // Called each time a new GPS fix arrives from the system.
   private onLocationUpdate(location: geoLocationManager.Location): void {
-    // Always store the latest fix — used in fall alerts regardless of anchor state
+    // Always store the latest fix — used in fall alerts regardless of anchor state.
     this.lastKnownLocation = location;
 
     if (this.anchorPoint === null) {
-      // No anchor set yet — caregiver hasn't done first-time setup
+      // No anchor set yet — tell the UI to show NOT_SET rather than returning silently.
+      // This ensures the status badge never shows a stale SAFE if GPS wakes up before setup.
+      this.onStateChange(DriftState.NOT_SET, 0, 0);
       return;
     }
 
@@ -310,7 +278,8 @@ export class GeofenceService {
       location.longitude
     );
 
-    // Bearing from anchor to current position (radians, clockwise from north)
+    // Bearing from anchor to current position (radians, clockwise from north).
+    // Used by the canvas radar to place the user dot in the right direction.
     const bearing = this.calculateBearing(
       this.anchorPoint.latitude,
       this.anchorPoint.longitude,
@@ -318,8 +287,9 @@ export class GeofenceService {
       location.longitude
     );
 
-    hilog.info(DOMAIN, 'GeofenceService', 'Distance: %{public}dm bearing: %{public}d°',
+    hilog.info(DOMAIN, 'GeofenceService', 'Distance: %{public}dm  bearing: %{public}d°',
       Math.round(distanceM), Math.round(bearing * 180 / Math.PI));
+
     this.evaluateDriftState(distanceM, bearing);
   }
 
@@ -327,38 +297,40 @@ export class GeofenceService {
   // Drift state machine
   // ------------------------------------------------------------------
 
-  // Decides the current DriftState based on distance + motion signal.
-  // Only fires haptics/notifications on state *transitions* to avoid spam.
+  // Determines the current DriftState from distance + motion signal.
+  // Fires haptics and notifications only on state *transitions* to avoid spam.
+  // Always calls onStateChange so the UI distance readout stays current.
   private evaluateDriftState(distanceM: number, bearing: number): void {
     let newState: DriftState;
 
-    if (!this.isMotionDetected || distanceM < DRIFTING_RADIUS_M) {
-      // Still, or within the inner safe zone — no concern
+    if (!this.isMotionDetected || distanceM < AppConfig.DRIFT_RADIUS) {
+      // Still, or within the inner safe zone — no concern.
       newState = DriftState.SAFE;
-    } else if (distanceM < ALERT_RADIUS_M) {
-      // Motion detected AND in the 30–50m band — early warning, not yet critical
+    } else if (distanceM < AppConfig.ALERT_RADIUS) {
+      // Motion detected AND in the 30–50m band — early warning.
       newState = DriftState.DRIFTING;
     } else {
-      // Motion detected AND beyond 50m — caregiver must be notified now
+      // Motion detected AND beyond 50m — caregiver must be notified now.
       newState = DriftState.ALERT;
     }
 
     const stateChanged = newState !== this.currentState;
 
     if (stateChanged) {
-      hilog.info(DOMAIN, 'GeofenceService', 'State: %{public}s → %{public}s', this.currentState, newState);
+      hilog.info(DOMAIN, 'GeofenceService',
+        'State: %{public}s → %{public}s', this.currentState, newState);
       this.currentState = newState;
 
-      // Haptic on every state change so the patient gets a wrist cue
+      // Haptic on every state change so the patient gets a wrist cue.
       this.triggerHaptic(newState);
 
-      // Caregiver notification only on the critical transition to ALERT
+      // Caregiver notification only on the critical transition to ALERT.
       if (newState === DriftState.ALERT) {
         this.triggerCaregiverAlert(distanceM);
       }
     }
 
-    // Always call back so the UI can update the distance readout and map position
+    // Always call back so the UI updates the distance readout and map position.
     this.onStateChange(newState, distanceM, bearing);
   }
 
@@ -369,23 +341,22 @@ export class GeofenceService {
   private triggerHaptic(state: DriftState): void {
     try {
       if (state === DriftState.DRIFTING) {
-        // 1 short pulse — a gentle nudge, not alarming
+        // 1 short pulse — a gentle nudge, not alarming.
         this.vibrate(200);
       } else if (state === DriftState.ALERT) {
-        // 3 firm pulses (300ms on, 150ms off) — clear, unmistakeable alert
-        // HarmonyOS vibrator is single-shot, so we chain calls via setTimeout
+        // 3 firm pulses (300ms on, 150ms off) — clear, unmistakeable alert.
+        // HarmonyOS vibrator is single-shot; chain calls via setTimeout.
         this.vibrate(300);
         setTimeout(() => { this.vibrate(300); }, 450);
         setTimeout(() => { this.vibrate(300); }, 900);
       }
-      // No haptic for SAFE — silence is reassurance
+      // No haptic for SAFE or NOT_SET — silence is reassurance.
     } catch (err) {
       hilog.error(DOMAIN, 'GeofenceService', 'Vibrator failed: %{public}s', JSON.stringify(err));
     }
   }
 
-  // Fires a single vibration of the given duration.
-  // Extracted so that vibrator object literals are always explicitly typed —
+  // Fires a single vibration. Extracted so object literals are always explicitly typed —
   // ArkTS forbids untyped inline object literals (arkts-no-untyped-obj-literals).
   private vibrate(durationMs: number): void {
     const effect: vibrator.VibrateTime = { type: 'time', duration: durationMs };
@@ -397,32 +368,10 @@ export class GeofenceService {
   // Caregiver notifications
   // ------------------------------------------------------------------
 
-  // Sends a push notification to the caregiver's device on ALERT.
-  // Uses a fixed notification ID (1001) so repeat alerts update in-place
-  // rather than stacking and cluttering the notification shade.
+  // Sends the ALERT caregiver notification via NotificationService.
+  // NotificationService owns all notification API calls — GeofenceService stays clean.
   private triggerCaregiverAlert(distanceM: number): void {
-    const distanceText = `${Math.round(distanceM)}m from home`;
-
-    // ArkTS requires every object literal to match an explicit type — declare sub-objects separately
-    const normalContent: notificationManager.NotificationBasicContent = {
-      title: 'ANCHOR Alert',
-      text: `${this.patientName} may have left home. Last known: ${distanceText}.`,
-      additionalText: 'Tap to open ANCHOR'
-    };
-    const content: notificationManager.NotificationContent = {
-      contentType: notification.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-      normal: normalContent
-    };
-    const notifRequest: notificationManager.NotificationRequest = {
-      id: 1001,
-      content: content,
-      deliveryTime: Date.now(),
-      showDeliveryTime: true
-    };
-
-    notificationManager.publish(notifRequest)
-      .then(() => hilog.info(DOMAIN, 'GeofenceService', 'Caregiver alert sent'))
-      .catch((err: Error) => hilog.error(DOMAIN, 'GeofenceService', 'Notification failed: %{public}s', JSON.stringify(err)));
+    NotificationService.sendDriftAlert(this.patientName, distanceM);
   }
 
   // ------------------------------------------------------------------
@@ -432,7 +381,7 @@ export class GeofenceService {
   // Handles a confirmed fall event — fires independently of geofence state.
   // A fall indoors is just as critical as one outside.
   private handleFall(): void {
-    // 3 long pulses — distinct from drift pattern so caregiver recognises urgency
+    // 3 long pulses — distinct from drift pattern so patient/caregiver recognises urgency.
     try {
       this.vibrate(500);
       setTimeout(() => { this.vibrate(500); }, 700);
@@ -441,44 +390,22 @@ export class GeofenceService {
       hilog.error(DOMAIN, 'GeofenceService', 'Fall haptic failed: %{public}s', JSON.stringify(err));
     }
 
-    // Build the alert message with name, GPS coords, and timestamp as specified
     const now = Date.now();
     const locationText = this.lastKnownLocation !== null
       ? this.formatCoords(this.lastKnownLocation)
       : 'Unknown';
-    const alertText =
-      `ANCHOR Fall Alert — ${this.patientName} may have fallen. ` +
-      `Location: ${locationText}. Time: ${this.formatTimestamp(now)}.`;
 
-    hilog.warn(DOMAIN, 'GeofenceService', 'Fall alert: %{public}s', alertText);
+    // Delegate to NotificationService — it logs the payload and publishes to the watch.
+    NotificationService.sendFallAlert(this.patientName, locationText, now);
 
-    // Fall notifications use ID 1002 so they never overwrite drift alerts (ID 1001)
-    // ArkTS requires every object literal to match an explicit type — declare sub-objects separately
-    const fallNormal: notificationManager.NotificationBasicContent = {
-      title: 'ANCHOR Fall Alert',
-      text: alertText,
-      additionalText: 'Tap to open ANCHOR'
-    };
-    const fallContent: notificationManager.NotificationContent = {
-      contentType: notification.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-      normal: fallNormal
-    };
-    const fallRequest: notificationManager.NotificationRequest = {
-      id: 1002,
-      content: fallContent,
-      deliveryTime: now,
-      showDeliveryTime: true
-    };
-
-    notificationManager.publish(fallRequest)
-      .then(() => hilog.info(DOMAIN, 'GeofenceService', 'Fall notification sent'))
-      .catch((err: Error) => hilog.error(DOMAIN, 'GeofenceService', 'Fall notification failed: %{public}s', JSON.stringify(err)));
-
-    // Notify UI so it can show the fall overlay screen
+    // Tell the UI to show the fall overlay.
     this.onFallDetected();
   }
 
-  // Formats a GPS location as human-readable coordinates.
+  // ------------------------------------------------------------------
+  // Formatting helpers
+  // ------------------------------------------------------------------
+
   // e.g. "51.5074°N, 0.1278°W"
   private formatCoords(location: geoLocationManager.Location): string {
     const lat = Math.abs(location.latitude).toFixed(4);
@@ -488,31 +415,21 @@ export class GeofenceService {
     return `${lat}°${latDir}, ${lng}°${lngDir}`;
   }
 
-  // Formats a Unix timestamp (ms) as HH:MM for inclusion in alert messages.
-  private formatTimestamp(timestampMs: number): string {
-    const date = new Date(timestampMs);
-    const hours = date.getHours().toString().padStart(2, '0');
-    const mins = date.getMinutes().toString().padStart(2, '0');
-    return `${hours}:${mins}`;
-  }
-
   // ------------------------------------------------------------------
-  // Haversine distance calculation
+  // Distance and bearing calculations
   // ------------------------------------------------------------------
 
   // Returns the initial bearing in radians (clockwise from north) from point 1 to point 2.
-  // Used by the canvas to place the user dot in the correct direction from the home dot.
   private calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
     const dLon = this.toRadians(lon2 - lon1);
     const y = Math.sin(dLon) * Math.cos(this.toRadians(lat2));
     const x =
       Math.cos(this.toRadians(lat1)) * Math.sin(this.toRadians(lat2)) -
       Math.sin(this.toRadians(lat1)) * Math.cos(this.toRadians(lat2)) * Math.cos(dLon);
-    return Math.atan2(y, x); // result: -π to π, clockwise from north
+    return Math.atan2(y, x);
   }
 
   // Returns the great-circle distance in metres between two lat/lng points.
-  // Used instead of a straight-line calculation because Earth is a sphere.
   private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
     const R = 6371000; // Earth's mean radius in metres
     const dLat = this.toRadians(lat2 - lat1);

@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
+import { notificationManager } from '@kit.NotificationKit';
 
 const DOMAIN = 0x0000;
 
@@ -31,8 +32,13 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
 
       // Request location permissions after the UI is ready so the system
-      // dialog has a window context to attach to
+      // dialog has a window context to attach to.
       this.requestLocationPermissions();
+
+      // Request notification enable immediately after load.
+      // If notifications are disabled the caregiver will not receive ANCHOR alerts.
+      // Non-fatal if the user dismisses — the app still runs, alerts just won't appear.
+      this.requestNotificationEnable();
     });
   }
 
@@ -58,6 +64,26 @@ export default class EntryAbility extends UIAbility {
       })
       .catch((err: Error) => {
         hilog.error(DOMAIN, 'testTag', 'Permission request failed: %{public}s', JSON.stringify(err));
+      });
+  }
+
+  // Checks whether notifications are enabled and shows the system prompt if not.
+  // Called once on launch so the caregiver is never silently blocked from alerts.
+  private requestNotificationEnable(): void {
+    notificationManager.isNotificationEnabled()
+      .then((enabled: boolean) => {
+        if (!enabled) {
+          return notificationManager.requestEnableNotification(this.context);
+        }
+        hilog.info(DOMAIN, 'testTag', 'Notifications already enabled');
+        return Promise.resolve();
+      })
+      .then(() => {
+        hilog.info(DOMAIN, 'testTag', 'Notification enable check complete');
+      })
+      .catch((err: Error) => {
+        // Non-fatal — user may have dismissed the dialog or notification API unavailable.
+        hilog.warn(DOMAIN, 'testTag', 'Notification enable request failed: %{public}s', JSON.stringify(err));
       });
   }
 
