@@ -1,3 +1,7 @@
+import { call } from '@kit.TelephonyKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { promptAction } from '@kit.ArkUI';
+
 interface ContactInfo {
   name: string;
   relationship: string;
@@ -223,6 +227,17 @@ struct CommunityCard {
     this.editMessage = 'Unsaved changes were cleared.';
   }
 
+  private callContact(name: string, phone: string): void {
+    const digits: string = phone.replace(/[^\d+]/g, '');
+    promptAction.showToast({
+      message: 'Calling ' + name + ' (' + phone + ')... [Simulation]',
+      duration: 3000
+    });
+    call.makeCall(digits).catch((err: BusinessError) => {
+      console.error('Failed to initiate call: ' + JSON.stringify(err));
+    });
+  }
+
   @Builder
   buildPageTitle(title: string) {
     Text(title)
@@ -272,8 +287,9 @@ struct CommunityCard {
     .alignItems(HorizontalAlign.Center)
     .padding({ left: 10, right: 10, top: 6, bottom: 6 })
     .backgroundColor('#14243A')
-    .borderRadius(12)
-  }
+    .borderRadius(12)      .onClick(() => {
+        this.callContact(this.displayEmergencyName, this.displayEmergencyPhone);
+      })  }
 
   @Builder
   buildSecondaryContactRow() {
@@ -314,6 +330,9 @@ struct CommunityCard {
     .padding({ left: 10, right: 10, top: 6, bottom: 6 })
     .backgroundColor('#14243A')
     .borderRadius(12)
+    .onClick(() => {
+      this.callContact(this.displaySecondaryName, this.displaySecondaryPhone);
+    })
   }
 
   @Builder
@@ -361,6 +380,9 @@ struct CommunityCard {
       .padding({ left: 10, right: 10, top: 8, bottom: 8 })
       .backgroundColor('#1B304C')
       .borderRadius(14)
+      .onClick(() => {
+        this.callContact(this.displayEmergencyName, this.displayEmergencyPhone);
+      })
 
       Text('Swipe for contacts and medical info')
         .fontSize(10)
