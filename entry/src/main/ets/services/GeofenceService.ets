@@ -59,6 +59,10 @@ export class GeofenceService {
   // Reference to the active GPS listener so we can unsubscribe.
   private locationListener: ((location: geoLocationManager.Location) => void) | null = null;
 
+  // Emulator-only: setInterval handle for polling getLastLocation().
+  // locationChange subscription never fires on the DevEco emulator, so we poll instead.
+  private emulatorPollTimer: number = -1;
+
   // Motion and fall detectors — injected at construction time.
   // GeofenceService never creates these itself; the caller (Index.ets) decides
   // which implementation to use based on AppConfig.IS_EMULATOR.
@@ -208,13 +212,21 @@ export class GeofenceService {
     this.motionDetector.stopMonitoring();
     this.fallDetector.stopMonitoring();
 
-    try {
-      if (this.locationListener !== null) {
-        geoLocationManager.off('locationChange', this.locationListener);
-        this.locationListener = null;
+    if (AppConfig.IS_EMULATOR) {
+      // Clear the emulator poll timer instead of unsubscribing locationChange.
+      if (this.emulatorPollTimer !== -1) {
+        clearInterval(this.emulatorPollTimer);
+        this.emulatorPollTimer = -1;
       }
-    } catch (err) {
-      hilog.warn(DOMAIN, 'GeofenceService', 'GPS stop failed: %{public}s', JSON.stringify(err));
+    } else {
+      try {
+        if (this.locationListener !== null) {
+          geoLocationManager.off('locationChange', this.locationListener);
+          this.locationListener = null;
+        }
+      } catch (err) {
+        hilog.warn(DOMAIN, 'GeofenceService', 'GPS stop failed: %{public}s', JSON.stringify(err));
+      }
     }
 
     hilog.info(DOMAIN, 'GeofenceService', 'Monitoring stopped');
@@ -225,6 +237,27 @@ export class GeofenceService {
   // ------------------------------------------------------------------
 
   private startGpsTracking(intervalSeconds: number): void {
+    if (AppConfig.IS_EMULATOR) {
+      // locationChange never fires on the DevEco emulator — poll getLastLocation() instead.
+      // This picks up whatever coordinates are injected via the emulator toolbar.
+      if (this.emulatorPollTimer !== -1) {
+        clearInterval(this.emulatorPollTimer);
+      }
+      // On emulator cap at 3s regardless of the requested interval — makes testing snappy.
+      const pollMs = Math.min(intervalSeconds * 1000, 3000);
+      this.emulatorPollTimer = setInterval(() => {
+        try {
+          const loc: geoLocationManager.Location = geoLocationManager.getLastLocation();
+          this.onLocationUpdate(loc);
+        } catch (_err) {
+          // No cached location yet — skip this tick, try again next interval.
+          hilog.warn(DOMAIN, 'GeofenceService', 'Emulator poll: no cached location yet');
+        }
+      }, pollMs) as number;
+      hilog.info(DOMAIN, 'GeofenceService', 'Emulator GPS poll started at %{public}dms', pollMs);
+      return;
+    }
+
     const request: geoLocationManager.LocationRequest = {
       priority: geoLocationManager.LocationRequestPriority.FIRST_FIX,
       scenario: geoLocationManager.LocationRequestScenario.UNSET,
@@ -248,6 +281,11 @@ export class GeofenceService {
   // Unsubscribe and re-subscribe at a new interval.
   // Called when motion state changes to switch between active and rest polling.
   private restartGpsTracking(intervalSeconds: number): void {
+    if (AppConfig.IS_EMULATOR) {
+      // Just restart the poll timer at the new interval.
+      this.startGpsTracking(intervalSeconds);
+      return;
+    }
     try {
       if (this.locationListener !== null) {
         geoLocationManager.off('locationChange', this.locationListener);

@@ -15,7 +15,11 @@ enum AppPage {
   MENU = 'MENU',
   HOME = 'HOME',
   SET_FENCE = 'SET_FENCE',
-  CHECK_LOCATION = 'CHECK_LOCATION'
+  CHECK_LOCATION = 'CHECK_LOCATION',
+  DEBUG = 'DEBUG',
+  DEBUG_WALKING = 'DEBUG_WALKING',
+  DEBUG_STILL = 'DEBUG_STILL',
+  DEBUG_FALL = 'DEBUG_FALL'
 }
 
 const HOME_CANVAS = 130;
@@ -54,11 +58,6 @@ struct Index {
   // --- Set Fence page ---
   @State private isSettingAnchor: boolean = false;
 
-  // --- Debug panel ---
-  // Shown only when the caregiver long-presses (3 s) the ANCHOR title on the menu screen.
-  // Never visible during a normal demo session.
-  @State private isDebugVisible: boolean = false;
-
   // --- Canvas ---
   private renderCfg: RenderingContextSettings = new RenderingContextSettings(true);
   private homeCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.renderCfg);
@@ -73,6 +72,13 @@ struct Index {
   // null when IS_EMULATOR is false (real device uses real detectors without these methods).
   private mockMotion: MockMotionDetector | null = null;
   private mockFall: MockFallDetector | null = null;
+
+  // --- Debug pages ---
+  // Live lat/lng shown on the DEBUG_WALKING page, refreshed every 3s.
+  @State private debugLat: number = 0;
+  @State private debugLng: number = 0;
+  // setInterval handle — cleared when navigating away from the walking debug page.
+  private debugCoordTimer: number = -1;
 
   // ------------------------------------------------------------------
   // Lifecycle
@@ -131,7 +137,10 @@ struct Index {
   // Checks that location is enabled before making any location call.
   // Returns false and sets locationError if not.
   private locationEnabled(): boolean {
-    if (!geoLocationManager.isLocationEnabled()) {
+    // Emulator workaround: isLocationEnabled() always returns false on the DevEco
+    // emulator even when coordinates are injected. Bypass the check in emulator mode.
+    const gpsOn = AppConfig.IS_EMULATOR || geoLocationManager.isLocationEnabled();
+    if (!gpsOn) {
       this.locationError = 'Location is off. Enable it in watch Settings.';
       return false;
     }
@@ -150,12 +159,45 @@ struct Index {
     return req;
   }
 
+  // Returns a Promise<Location> using getLastLocation() on the emulator
+  // (reads injected coordinates immediately) or getCurrentLocation() on a real device.
+  // The emulator does not respond to getCurrentLocation() one-shot requests — it times out.
+  // getLastLocation() is synchronous — wrap it in a Promise so callers stay uniform.
+  private getLocation(): Promise<geoLocationManager.Location> {
+    if (AppConfig.IS_EMULATOR) {
+      // Try getLastLocation() first — returns injected coordinates if the emulator
+      // toolbar has been used. If it throws (no cached fix yet), fall back to the
+      // hardcoded Singapore demo coordinates so the demo always works.
+      try {
+        const loc: geoLocationManager.Location = geoLocationManager.getLastLocation();
+        return Promise.resolve(loc);
+      } catch (_err) {
+        const fallback: geoLocationManager.Location = {
+          latitude: 1.35210,
+          longitude: 103.81980,
+          altitude: 0,
+          accuracy: 10,
+          altitudeAccuracy: 0,
+          speed: 0,
+          timeStamp: Date.now(),
+          timeSinceBoot: 0,
+          direction: 0,
+          additions: [],
+          additionSize: 0
+        };
+        hilog.warn(DOMAIN, 'Index', 'getLastLocation failed — using hardcoded emulator fallback');
+        return Promise.resolve(fallback);
+      }
+    }
+    return geoLocationManager.getCurrentLocation(this.makeLocationRequest());
+  }
+
   private setHomePoint(): void {
     if (!this.locationEnabled()) return;
     this.isSettingAnchor = true;
     this.gpsAccuracy = -1; // reset accuracy until new fix arrives
 
-    geoLocationManager.getCurrentLocation(this.makeLocationRequest())
+    this.getLocation()
       .then((location: geoLocationManager.Location) => {
         // Store GPS accuracy so the UI can show "±Xm" to the caregiver.
         this.gpsAccuracy = location.accuracy;
@@ -175,7 +217,7 @@ struct Index {
       })
       .catch((err: Error) => {
         this.isSettingAnchor = false;
-        this.locationError = 'Could not get a GPS fix. Try again outside.';
+        this.locationError = 'Could not get a GPS fix. Inject coordinates in the emulator toolbar first.';
         hilog.error(DOMAIN, 'Index', 'setHomePoint failed: %{public}s', JSON.stringify(err));
       });
   }
@@ -185,7 +227,7 @@ struct Index {
     this.isFetchingLocation = true;
     this.locationError = '';
 
-    geoLocationManager.getCurrentLocation(this.makeLocationRequest())
+    this.getLocation()
       .then((location: geoLocationManager.Location) => {
         this.currentLat = location.latitude;
         this.currentLng = location.longitude;
@@ -195,7 +237,7 @@ struct Index {
       })
       .catch((err: Error) => {
         this.isFetchingLocation = false;
-        this.locationError = 'Could not get a GPS fix. Try again outside.';
+        this.locationError = 'Could not get a GPS fix. Inject coordinates in the emulator toolbar first.';
         hilog.error(DOMAIN, 'Index', 'fetchLocation failed: %{public}s', JSON.stringify(err));
       });
   }
@@ -286,6 +328,29 @@ struct Index {
   // Helpers
   // ------------------------------------------------------------------
 
+  // Starts polling getLastLocation() every 3s so the DEBUG_WALKING page shows live coords.
+  private startDebugCoordTimer(): void {
+    if (this.debugCoordTimer !== -1) {
+      clearInterval(this.debugCoordTimer);
+    }
+    this.debugCoordTimer = setInterval(() => {
+      try {
+        const loc: geoLocationManager.Location = geoLocationManager.getLastLocation();
+        this.debugLat = loc.latitude;
+        this.debugLng = loc.longitude;
+      } catch (_err) {
+        // no cached fix yet — leave the previous values displayed
+      }
+    }, 3000) as number;
+  }
+
+  private stopDebugCoordTimer(): void {
+    if (this.debugCoordTimer !== -1) {
+      clearInterval(this.debugCoordTimer);
+      this.debugCoordTimer = -1;
+    }
+  }
+
   // Returns the display label for the current drift state.
   // NOT_SET is the no-anchor state — must never show SAFE without a real anchor.
   private statusLabel(): string {
@@ -339,14 +404,18 @@ struct Index {
         this.HomePage();
       } else if (this.page === AppPage.SET_FENCE) {
         this.SetFencePage();
+      } else if (this.page === AppPage.DEBUG) {
+        this.DebugPage();
+      } else if (this.page === AppPage.DEBUG_WALKING) {
+        this.DebugWalkingPage();
+      } else if (this.page === AppPage.DEBUG_STILL) {
+        this.DebugStillPage();
+      } else if (this.page === AppPage.DEBUG_FALL) {
+        this.DebugFallPage();
       } else {
         this.CheckLocationPage();
       }
 
-      // Debug panel — above page content, below fall overlay
-      if (this.isDebugVisible) {
-        this.DebugPanel();
-      }
 
       // Fall overlay — highest layer, always blocks everything underneath
       if (this.isFallDetected) {
@@ -375,8 +444,8 @@ struct Index {
         .gesture(
           LongPressGesture({ duration: 3000, repeat: false })
             .onAction(() => {
-              hilog.info(DOMAIN, 'Index', 'Debug panel unlocked via long-press');
-              this.isDebugVisible = true;
+              hilog.info(DOMAIN, 'Index', 'Debug page unlocked via long-press');
+              this.page = AppPage.DEBUG;
             })
         )
 
@@ -525,55 +594,55 @@ struct Index {
   // ------------------------------------------------------------------
   @Builder
   SetFencePage() {
-    Column({ space: 8 }) {
+    Column({ space: 5 }) {
 
       this.BackButton();
 
       Text('Set Fence')
-        .fontSize(14)
+        .fontSize(13)
         .fontWeight(FontWeight.Bold)
         .fontColor('#FFFFFF')
 
       // GPS enabled status — shown before the button so the caregiver knows
       // whether a fix is likely before they tap.
-      if (!geoLocationManager.isLocationEnabled()) {
+      if (!AppConfig.IS_EMULATOR && !geoLocationManager.isLocationEnabled()) {
         Text('GPS is off — enable Location in Settings')
-          .fontSize(10)
+          .fontSize(9)
           .fontColor('#F87171')
           .textAlign(TextAlign.Center)
           .width('85%')
       } else if (this.gpsAccuracy > 0) {
         // Show accuracy after a successful fix
         Text(`GPS ready — accuracy ±${Math.round(this.gpsAccuracy)} m`)
-          .fontSize(10)
+          .fontSize(9)
           .fontColor('#4ADE80')
           .textAlign(TextAlign.Center)
           .width('85%')
       } else {
         Text('GPS available — tap to set home point')
-          .fontSize(10)
+          .fontSize(9)
           .fontColor('#9CA3AF')
           .textAlign(TextAlign.Center)
           .width('85%')
       }
 
       Text(this.hasAnchor ? '● Home point set' : '○ No home point')
-        .fontSize(11)
+        .fontSize(10)
         .fontColor(this.hasAnchor ? '#4ADE80' : '#AAAAAA')
 
       Canvas(this.fenceCtx)
-        .width(FENCE_CANVAS)
-        .height(FENCE_CANVAS)
-        .borderRadius(FENCE_CANVAS / 2)
+        .width(80)
+        .height(80)
+        .borderRadius(40)
         .onReady(() => {
           this.fenceCanvasReady = true;
-          this.drawMap(this.fenceCtx, FENCE_CANVAS);
+          this.drawMap(this.fenceCtx, 80);
         })
 
       // Error message if GPS failed or is off
       if (this.locationError !== '') {
         Text(this.locationError)
-          .fontSize(10)
+          .fontSize(9)
           .fontColor('#F87171')
           .textAlign(TextAlign.Center)
           .width('85%')
@@ -581,14 +650,14 @@ struct Index {
 
       // Disable button if GPS is off or a fix is in progress
       Button(this.isSettingAnchor ? 'Locating...' : (this.hasAnchor ? 'Reset Home Point' : 'Set Home Point'))
-        .fontSize(13)
+        .fontSize(12)
         .fontWeight(FontWeight.Medium)
         .fontColor('#0D0D0D')
-        .backgroundColor(geoLocationManager.isLocationEnabled() ? '#4ADE80' : '#3A3A3A')
+        .backgroundColor((AppConfig.IS_EMULATOR || geoLocationManager.isLocationEnabled()) ? '#4ADE80' : '#3A3A3A')
         .width('78%')
-        .height(38)
-        .borderRadius(19)
-        .enabled(!this.isSettingAnchor && geoLocationManager.isLocationEnabled())
+        .height(34)
+        .borderRadius(17)
+        .enabled(!this.isSettingAnchor && (AppConfig.IS_EMULATOR || geoLocationManager.isLocationEnabled()))
         .onClick(() => { this.setHomePoint(); })
 
     }
@@ -758,7 +827,7 @@ struct Index {
         .fontColor('#FFFFFF')
         .textAlign(TextAlign.Center)
 
-      // Large button — minimum 60×60dp tap target, hard to miss under stress
+      // Large button — tap to dismiss overlay, long-press to go back to home screen
       Button('Dismiss')
         .fontSize(14)
         .fontWeight(FontWeight.Bold)
@@ -768,6 +837,18 @@ struct Index {
         .height(52)
         .borderRadius(26)
         .onClick(() => { this.isFallDetected = false; })
+        .gesture(
+          LongPressGesture({ duration: 800, repeat: false })
+            .onAction(() => {
+              this.isFallDetected = false;
+              this.page = AppPage.MENU;
+            })
+        )
+
+      Text('Long-press to go home')
+        .fontSize(9)
+        .fontColor('#88888888')
+        .textAlign(TextAlign.Center)
 
     }
     .width('100%')
@@ -783,89 +864,196 @@ struct Index {
   }
 
   // ------------------------------------------------------------------
-  // Debug panel — hidden, slide-up overlay from bottom
-  // Only accessible by long-pressing the ANCHOR title for 3 seconds.
-  // Must NOT be visible during the hackathon demo unless deliberately triggered.
+  // DEBUG_WALKING page — confirms walking is active, prints coords every 3s
   // ------------------------------------------------------------------
   @Builder
-  DebugPanel() {
-    Column({ space: 0 }) {
+  DebugWalkingPage() {
+    Column({ space: 10 }) {
 
-      // Transparent upper area — tapping it closes the debug panel
-      Column()
-        .width('100%')
-        .layoutWeight(1)
-        .onClick(() => { this.isDebugVisible = false; })
+      Text('< Back')
+        .fontSize(11)
+        .fontColor('#666666')
+        .padding({ top: 3, bottom: 3, left: 6, right: 6 })
+        .onClick(() => {
+          this.stopDebugCoordTimer();
+          this.page = AppPage.MENU;
+        })
 
-      // Panel content — slides in from bottom
-      Column({ space: 10 }) {
+      Text('Walking Mode Active')
+        .fontSize(16)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#FBBF24')
 
-        Text('⚙ Debug Panel')
-          .fontSize(12)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#FFFFFF')
-          .padding({ bottom: 4 })
+      Text('Coordinates update every 3s')
+        .fontSize(10)
+        .fontColor('#666666')
 
-        // Simulate Walking — sets mock motion state to walking.
-        // Combined with GPS drift via emulator toolbar triggers DRIFTING / ALERT.
-        Button('Simulate Walking')
-          .fontSize(12)
-          .fontColor('#0D0D0D')
-          .backgroundColor('#FBBF24')
-          .width('80%')
-          .height(40)
-          .borderRadius(20)
-          .onClick(() => {
-            this.mockMotion?.simulateWalking();
-          })
+      Text(this.debugLat !== 0
+        ? `${this.debugLat.toFixed(5)}, ${this.debugLng.toFixed(5)}`
+        : 'Waiting for GPS fix...')
+        .fontSize(13)
+        .fontColor('#FFFFFF')
+        .textAlign(TextAlign.Center)
 
-        // Simulate Still — resets mock motion to still.
-        // Returns state to SAFE (distance permitting).
-        Button('Simulate Still')
-          .fontSize(12)
-          .fontColor('#0D0D0D')
-          .backgroundColor('#4ADE80')
-          .width('80%')
-          .height(40)
-          .borderRadius(20)
-          .onClick(() => {
-            this.mockMotion?.simulateStill();
-          })
-
-        // Simulate Fall — fires the fall overlay and caregiver notification.
-        // Works independently of geofence state.
-        Button('Simulate Fall')
-          .fontSize(12)
-          .fontColor('#FFFFFF')
-          .backgroundColor('#F87171')
-          .width('80%')
-          .height(40)
-          .borderRadius(20)
-          .onClick(() => {
-            this.mockFall?.simulateFall();
-          })
-
-        Button('Close Debug')
-          .fontSize(11)
-          .fontColor('#666666')
-          .backgroundColor('#1A1A1A')
-          .width('80%')
-          .height(34)
-          .borderRadius(17)
-          .onClick(() => { this.isDebugVisible = false; })
-
+      // Live drift state so you can see it change as you inject coords
+      Row({ space: 6 }) {
+        Text('●').fontSize(10).fontColor(this.statusColor())
+        Text(this.statusLabel()).fontSize(12).fontColor(this.statusColor()).fontWeight(FontWeight.Bold)
       }
-      .width('100%')
-      .backgroundColor('#111111')
-      .borderRadius(14)
-      .padding({ left: 16, right: 16, top: 14, bottom: 20 })
-      .alignItems(HorizontalAlign.Center)
+
+      Text(`${Math.round(this.distanceMetres)} m from home`)
+        .fontSize(11)
+        .fontColor('#AAAAAA')
+
+      Text('Inject new coords in emulator\ntoolbar to trigger DRIFTING / ALERT')
+        .fontSize(9)
+        .fontColor('#555555')
+        .textAlign(TextAlign.Center)
+        .width('85%')
 
     }
     .width('100%')
     .height('100%')
-    .justifyContent(FlexAlign.End)
-    .backgroundColor('#80000000')  // semi-transparent scrim behind panel
-    .hitTestBehavior(HitTestMode.Block)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+  }
+
+  // ------------------------------------------------------------------
+  // DEBUG_STILL page — confirms still mode is active
+  // ------------------------------------------------------------------
+  @Builder
+  DebugStillPage() {
+    Column({ space: 10 }) {
+
+      Text('< Back')
+        .fontSize(11)
+        .fontColor('#666666')
+        .padding({ top: 3, bottom: 3, left: 6, right: 6 })
+        .onClick(() => { this.page = AppPage.MENU; })
+
+      Text('Still Mode Active')
+        .fontSize(16)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#4ADE80')
+
+      Text('Motion detection stopped.\nState will return to SAFE\nregardless of GPS position.')
+        .fontSize(11)
+        .fontColor('#AAAAAA')
+        .textAlign(TextAlign.Center)
+
+      Row({ space: 6 }) {
+        Text('●').fontSize(10).fontColor(this.statusColor())
+        Text(this.statusLabel()).fontSize(12).fontColor(this.statusColor()).fontWeight(FontWeight.Bold)
+      }
+
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+  }
+
+  // ------------------------------------------------------------------
+  // DEBUG_FALL page — confirms fall was triggered (overlay appears on top)
+  // ------------------------------------------------------------------
+  @Builder
+  DebugFallPage() {
+    Column({ space: 10 }) {
+
+      Text('< Back')
+        .fontSize(11)
+        .fontColor('#666666')
+        .padding({ top: 3, bottom: 3, left: 6, right: 6 })
+        .onClick(() => { this.page = AppPage.MENU; })
+
+      Text('Fall Signal Sent')
+        .fontSize(16)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#F87171')
+
+      Text('The fall overlay should have\nappeared above this screen.\nDismiss it to return.')
+        .fontSize(11)
+        .fontColor('#AAAAAA')
+        .textAlign(TextAlign.Center)
+
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+  }
+
+  // ------------------------------------------------------------------
+  // Debug page — full page, no overlay, so buttons definitely receive touches.
+  // Reached by long-pressing the ANCHOR title for 3 seconds.
+  // ------------------------------------------------------------------
+  @Builder
+  DebugPage() {
+    Column({ space: 12 }) {
+
+      Text('⚙ Debug')
+        .fontSize(14)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#FFFFFF')
+
+      Button('Simulate Walking')
+        .fontSize(13)
+        .fontColor('#0D0D0D')
+        .backgroundColor('#FBBF24')
+        .width('82%')
+        .height(42)
+        .borderRadius(21)
+        .onClick(() => {
+          this.mockMotion?.simulateWalking();
+          this.startDebugCoordTimer();
+          this.page = AppPage.DEBUG_WALKING;
+        })
+
+      Button('Simulate Still')
+        .fontSize(13)
+        .fontColor('#0D0D0D')
+        .backgroundColor('#4ADE80')
+        .width('82%')
+        .height(42)
+        .borderRadius(21)
+        .onClick(() => {
+          this.mockMotion?.simulateStill();
+          this.stopDebugCoordTimer();
+          this.page = AppPage.DEBUG_STILL;
+        })
+
+      Button('Simulate Fall')
+        .fontSize(13)
+        .fontColor('#FFFFFF')
+        .backgroundColor('#F87171')
+        .width('82%')
+        .height(42)
+        .borderRadius(21)
+        .onClick(() => {
+          this.page = AppPage.DEBUG_FALL;
+          this.mockFall?.simulateFall();
+        })
+
+      Button('Close Debug')
+        .fontSize(12)
+        .fontColor('#AAAAAA')
+        .backgroundColor('#1E1E1E')
+        .width('82%')
+        .height(36)
+        .borderRadius(18)
+        .onClick(() => {
+          this.page = AppPage.MENU;
+        })
+
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .backgroundColor('#0D0D0D')
+    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
   }
 }
