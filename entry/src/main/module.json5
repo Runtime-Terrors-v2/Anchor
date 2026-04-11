@@ -28,6 +28,10 @@
           "abilities": ["EntryAbility"],
           "when": "always"
         }
+      },
+      {
+        // Phone calling — needed by Community Card to dial emergency contacts
+        "name": "ohos.permission.PLACE_CALL"
       }
     ],
     "abilities": [

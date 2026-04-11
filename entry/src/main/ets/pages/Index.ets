@@ -8,6 +8,7 @@ import { FallDetector, MockFallDetector, RealFallDetector } from '../services/Fa
 import common from '@ohos.app.ability.common';
 import geoLocationManager from '@ohos.geoLocationManager';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { router } from '@kit.ArkUI';
 
 const DOMAIN = 0x0000;
 
@@ -502,6 +503,19 @@ struct Index {
           this.fetchCurrentLocation();
           this.page = AppPage.CHECK_LOCATION;
         })
+
+      Button('Community Card')
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#FFFFFF')
+        .backgroundColor('#1E1E1E')
+        .width('72%')
+        .height(38)
+        .borderRadius(19)
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/CommunityCard' });
+        })
+
 
       // "Simulate Fall" button intentionally removed from this screen.
       // Access it via the debug panel (long-press ANCHOR title for 3 s).
