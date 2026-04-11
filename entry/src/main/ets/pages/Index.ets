@@ -516,6 +516,7 @@ struct Index {
           router.pushUrl({ url: 'pages/CommunityCard' });
         })
 
+
       // "Simulate Fall" button intentionally removed from this screen.
       // Access it via the debug panel (long-press ANCHOR title for 3 s).
 
