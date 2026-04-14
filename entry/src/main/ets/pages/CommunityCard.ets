@@ -1,6 +1,7 @@
 import { call } from '@kit.TelephonyKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { promptAction } from '@kit.ArkUI';
+import router from '@ohos.router';
 
 interface ContactInfo {
   name: string;
@@ -242,7 +243,7 @@ struct CommunityCard {
   buildPageTitle(title: string) {
     Text(title)
       .fontSize(10)
-      .fontColor('#83D1FF')
+      .fontColor('#888888')
       .fontWeight(FontWeight.Medium)
       .textAlign(TextAlign.Center)
       .width('100%')
@@ -254,14 +255,14 @@ struct CommunityCard {
     Column({ space: 2 }) {
       Text('Primary')
         .fontSize(11)
-        .fontColor('#FFCF66')
+        .fontColor('#4ADE80')
         .fontWeight(FontWeight.Bold)
         .textAlign(TextAlign.Center)
         .width('100%')
 
       Text(this.displayEmergencyName)
         .fontSize(15)
-        .fontColor('#F4F8FF')
+        .fontColor('#FFFFFF')
         .fontWeight(FontWeight.Medium)
         .textAlign(TextAlign.Center)
         .width('100%')
@@ -270,7 +271,7 @@ struct CommunityCard {
 
       Text(this.displayEmergencyRelationship)
         .fontSize(11)
-        .fontColor('#A8B8CA')
+        .fontColor('#9CA3AF')
         .textAlign(TextAlign.Center)
         .width('100%')
         .maxLines(1)
@@ -286,7 +287,7 @@ struct CommunityCard {
     .width('100%')
     .alignItems(HorizontalAlign.Center)
     .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-    .backgroundColor('#14243A')
+    .backgroundColor('#1A1A1A')
     .borderRadius(12)      .onClick(() => {
         this.callContact(this.displayEmergencyName, this.displayEmergencyPhone);
       })  }
@@ -296,14 +297,14 @@ struct CommunityCard {
     Column({ space: 2 }) {
       Text('Secondary')
         .fontSize(11)
-        .fontColor('#95F1C7')
+        .fontColor('#9CA3AF')
         .fontWeight(FontWeight.Bold)
         .textAlign(TextAlign.Center)
         .width('100%')
 
       Text(this.displaySecondaryName)
         .fontSize(15)
-        .fontColor('#F4F8FF')
+        .fontColor('#FFFFFF')
         .fontWeight(FontWeight.Medium)
         .textAlign(TextAlign.Center)
         .width('100%')
@@ -312,7 +313,7 @@ struct CommunityCard {
 
       Text(this.displaySecondaryRelationship)
         .fontSize(11)
-        .fontColor('#A8B8CA')
+        .fontColor('#9CA3AF')
         .textAlign(TextAlign.Center)
         .width('100%')
         .maxLines(1)
@@ -328,7 +329,7 @@ struct CommunityCard {
     .width('100%')
     .alignItems(HorizontalAlign.Center)
     .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-    .backgroundColor('#14243A')
+    .backgroundColor('#1A1A1A')
     .borderRadius(12)
     .onClick(() => {
       this.callContact(this.displaySecondaryName, this.displaySecondaryPhone);
@@ -342,7 +343,7 @@ struct CommunityCard {
 
       Text(this.displayFullName)
         .fontSize(28)
-        .fontColor('#F8FBFF')
+        .fontColor('#FFFFFF')
         .fontWeight(FontWeight.Bold)
         .textAlign(TextAlign.Center)
         .maxLines(1)
@@ -351,7 +352,7 @@ struct CommunityCard {
 
       Text('If disoriented, please call family.')
         .fontSize(13)
-        .fontColor('#D4DCE8')
+        .fontColor('#9CA3AF')
         .textAlign(TextAlign.Center)
         .lineHeight(18)
         .maxLines(2)
@@ -360,7 +361,7 @@ struct CommunityCard {
       Column({ space: 2 }) {
         Text('CALL PRIMARY CONTACT')
           .fontSize(11)
-          .fontColor('#FFE79A')
+          .fontColor('#4ADE80')
           .fontWeight(FontWeight.Bold)
 
         Text(this.displayEmergencyName)
@@ -372,13 +373,13 @@ struct CommunityCard {
 
         Text(this.displayEmergencyRelationship + '  |  ' + this.displayEmergencyPhone)
           .fontSize(13)
-          .fontColor('#E5EDF9')
+          .fontColor('#9CA3AF')
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       .width('100%')
       .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-      .backgroundColor('#1B304C')
+      .backgroundColor('#1A1A1A')
       .borderRadius(14)
       .onClick(() => {
         this.callContact(this.displayEmergencyName, this.displayEmergencyPhone);
@@ -386,7 +387,7 @@ struct CommunityCard {
 
       Text('Swipe for contacts and medical info')
         .fontSize(10)
-        .fontColor('#7F93AA')
+        .fontColor('#9CA3AF')
         .textAlign(TextAlign.Center)
         .width('100%')
         .maxLines(1)
@@ -407,7 +408,7 @@ struct CommunityCard {
 
       Text('Resident: ' + this.displayFullName)
         .fontSize(10)
-        .fontColor('#90A0B2')
+        .fontColor('#9CA3AF')
         .textAlign(TextAlign.Center)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -428,11 +429,11 @@ struct CommunityCard {
   }
 
   @Builder
-  buildInfoTile(label: string, value: string, accent: string = '#EAF2FF') {
+  buildInfoTile(label: string, value: string, accent: string = '#FFFFFF') {
     Column({ space: 2 }) {
       Text(label)
         .fontSize(9)
-        .fontColor('#8EA3B9')
+        .fontColor('#9CA3AF')
       Text(value)
         .fontSize(14)
         .fontColor(accent)
@@ -443,7 +444,7 @@ struct CommunityCard {
     .layoutWeight(1)
     .alignItems(HorizontalAlign.Start)
     .padding({ left: 7, right: 7, top: 6, bottom: 6 })
-    .backgroundColor('#13253A')
+    .backgroundColor('#252525')
     .borderRadius(10)
   }
 
@@ -452,18 +453,18 @@ struct CommunityCard {
     Column({ space: 3 }) {
       Text(title)
         .fontSize(9)
-        .fontColor('#93A8BD')
+        .fontColor('#9CA3AF')
         .fontWeight(FontWeight.Medium)
       Text(value)
         .fontSize(11)
-        .fontColor('#E3EBF8')
+        .fontColor('#FFFFFF')
         .lineHeight(15)
         .maxLines(maxLines)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
     .padding({ left: 7, right: 7, top: 6, bottom: 6 })
-    .backgroundColor('#0F1E32')
+    .backgroundColor('#1A1A1A')
     .borderRadius(10)
   }
 
@@ -473,10 +474,10 @@ struct CommunityCard {
       ForEach(this.profile.allergies, (item: string) => {
         Text(item)
           .fontSize(10)
-          .fontColor('#0A1630')
+          .fontColor('#FFFFFF')
           .fontWeight(FontWeight.Medium)
           .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-          .backgroundColor('#BFE4FF')
+          .backgroundColor('#252525')
           .borderRadius(8)
           .margin({ right: 5, bottom: 5 })
       })
@@ -495,7 +496,7 @@ struct CommunityCard {
             .fontColor('#77D7FF')
             .fontWeight(FontWeight.Bold)
           Span(this.displayBloodType)
-            .fontColor('#EAF3FF')
+            .fontColor('#FFFFFF')
         }
         .fontSize(10)
         .lineHeight(13)
@@ -508,7 +509,7 @@ struct CommunityCard {
             .fontColor('#8FF0C4')
             .fontWeight(FontWeight.Bold)
           Span(this.displayPreferredLanguage)
-            .fontColor('#EAF3FF')
+            .fontColor('#FFFFFF')
         }
         .fontSize(10)
         .lineHeight(13)
@@ -521,7 +522,7 @@ struct CommunityCard {
             .fontColor('#FFD37A')
             .fontWeight(FontWeight.Bold)
           Span(this.displayAllergiesText)
-            .fontColor('#EAF3FF')
+            .fontColor('#FFFFFF')
         }
         .fontSize(10)
         .lineHeight(13)
@@ -534,7 +535,7 @@ struct CommunityCard {
             .fontColor('#C6B0FF')
             .fontWeight(FontWeight.Bold)
           Span(this.displayHomeAddress)
-            .fontColor('#EAF3FF')
+            .fontColor('#FFFFFF')
         }
         .fontSize(10)
         .lineHeight(13)
@@ -547,7 +548,7 @@ struct CommunityCard {
             .fontColor('#FF9FA0')
             .fontWeight(FontWeight.Bold)
           Span(this.displayMedicalSummary)
-            .fontColor('#EAF3FF')
+            .fontColor('#FFFFFF')
         }
         .fontSize(10)
         .lineHeight(13)
@@ -557,10 +558,10 @@ struct CommunityCard {
 
         Text() {
           Span('Updated: ')
-            .fontColor('#7EA0BA')
+            .fontColor('#9CA3AF')
             .fontWeight(FontWeight.Bold)
           Span(this.displayLastUpdatedAt)
-            .fontColor('#9FB4C8')
+            .fontColor('#9CA3AF')
         }
         .fontSize(9)
         .lineHeight(12)
@@ -584,7 +585,7 @@ struct CommunityCard {
     Column({ space: 2 }) {
       Text(label)
         .fontSize(10)
-        .fontColor('#89C9F2')
+        .fontColor('#9CA3AF')
         .width('100%')
 
       if (multiline) {
@@ -593,7 +594,7 @@ struct CommunityCard {
           .height(44)
           .textAlign(TextAlign.Center)
           .padding({ left: 10, right: 10 })
-          .backgroundColor('#10243A')
+          .backgroundColor('#252525')
           .borderRadius(8)
           .width('100%')
           .onChange((input: string) => {
@@ -605,7 +606,7 @@ struct CommunityCard {
           .height(32)
           .textAlign(TextAlign.Center)
           .padding({ left: 10, right: 10 })
-          .backgroundColor('#10243A')
+          .backgroundColor('#252525')
           .borderRadius(8)
           .width('100%')
           .onChange((input: string) => {
@@ -662,7 +663,7 @@ struct CommunityCard {
 
           Text(this.editMessage)
             .fontSize(10)
-            .fontColor('#99D7A8')
+            .fontColor('#4ADE80')
             .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .width('100%')
@@ -681,14 +682,14 @@ struct CommunityCard {
         Button('Save')
           .fontSize(12)
           .height(32)
-          .backgroundColor('#2878F0')
+          .backgroundColor('#4ADE80')
           .onClick(() => {
             this.saveEditedProfile();
           })
         Button('Reset')
           .fontSize(12)
           .height(32)
-          .backgroundColor('#334A66')
+          .backgroundColor('#252525')
           .onClick(() => {
             this.restoreEditFields();
           })
@@ -704,7 +705,17 @@ struct CommunityCard {
   }
 
   build() {
-    Stack() {
+    Column() {
+
+      // Back button — identical style to the BackButton() used on all other pages.
+      Text('< Back')
+        .fontSize(11)
+        .fontColor('#666666')
+        .padding({ top: 3, bottom: 3, left: 6, right: 6 })
+        .alignSelf(ItemAlign.Center)
+        .onClick(() => { router.back(); })
+
+      // Swiper fills remaining height below the back button.
       Swiper() {
         this.buildHelpPage()
         this.buildContactsPage()
@@ -712,14 +723,15 @@ struct CommunityCard {
         this.buildEditPage()
       }
       .width('100%')
-      .height('100%')
+      .layoutWeight(1)
       .indicator(true)
       .loop(false)
       .autoPlay(false)
       .duration(260)
+
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#0A111B')
+    .backgroundColor('#0D0D0D')
   }
 }
