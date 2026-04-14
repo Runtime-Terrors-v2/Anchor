@@ -363,7 +363,7 @@ struct Index {
 
   // Returns the hex colour for the current drift state.
   private statusColor(): string {
-    if (this.driftState === DriftState.NOT_SET) return '#9CA3AF'; // grey — neutral, not alarming
+    if (this.driftState === DriftState.NOT_SET) return '#FBBF24'; // amber — action required
     if (this.driftState === DriftState.SAFE) return '#4ADE80';
     if (this.driftState === DriftState.DRIFTING) return '#FBBF24';
     return '#F87171';
@@ -434,14 +434,16 @@ struct Index {
   // ------------------------------------------------------------------
   @Builder
   MenuPage() {
-    Column({ space: 9 }) {
+    // space: 4 keeps rows compact enough to fit all four items on a round watch screen.
+    Column({ space: 4 }) {
 
-      // ANCHOR title — long-press 3 s to reveal the hidden debug panel.
-      // The gesture fires onAction after the press duration is met.
+      // App title — white, bold, centred.
+      // Long-press 3 s to unlock the hidden debug panel.
       Text('ANCHOR')
-        .fontSize(15)
+        .fontSize(16)
         .fontWeight(FontWeight.Bold)
         .fontColor('#FFFFFF')
+        .textAlign(TextAlign.Center)
         .gesture(
           LongPressGesture({ duration: 3000, repeat: false })
             .onAction(() => {
@@ -450,82 +452,151 @@ struct Index {
             })
         )
 
-      // Live state badge — colour and label reflect current drift state.
-      // NOT_SET shows grey so the caregiver immediately knows setup is needed.
-      Row({ space: 4 }) {
+      // Status badge pill — border and dot colour track the live drift state.
+      Row({ space: 5 }) {
         Text('●')
-          .fontSize(9)
+          .fontSize(8)
           .fontColor(this.statusColor())
-        Text(this.statusLabel())
-          .fontSize(11)
+        Text('STATUS: ' + this.statusLabel())
+          .fontSize(10)
+          .fontWeight(FontWeight.Bold)
           .fontColor(this.statusColor())
-          .fontWeight(FontWeight.Medium)
       }
-      .padding({ left: 10, right: 10, top: 3, bottom: 3 })
-      .borderRadius(10)
-      .backgroundColor(this.statusColor() + '20')
+      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+      .borderRadius(12)
+      .border({ width: 1, color: this.statusColor() })
 
-      // "Status" button renamed from "Home" — shows live drift state colour so
-      // the caregiver sees an alert at a glance without opening the screen.
-      Button('Status')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#0D0D0D')
-        .backgroundColor(this.statusColor())
-        .width('72%')
-        .height(38)
-        .borderRadius(19)
-        .onClick(() => { this.page = AppPage.HOME; })
+      // ── Row 1 — CURRENT STATUS ──────────────────────────────────────
+      // Border colour matches drift state for at-a-glance status on the menu.
+      // Icon: 👤 person silhouette — represents the monitored individual.
+      Row({ space: 10 }) {
+        Text('👤')
+          .fontSize(16)
+          .width(28)
+          .height(28)
+          .borderRadius(14)
+          .backgroundColor('#252525')
+          .textAlign(TextAlign.Center)
+        Column({ space: 2 }) {
+          Text('CURRENT STATUS')
+            .fontSize(12)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+          Text(this.lastUpdateLabel() === '' ? 'Tap to view' : this.lastUpdateLabel())
+            .fontSize(10)
+            .fontColor('#9CA3AF')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('92%')
+      .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+      .borderRadius(12)
+      .backgroundColor('#1A1A1A')
+      .border({ width: 1, color: this.statusColor() })
+      .onClick(() => { this.page = AppPage.HOME; })
 
-      Button('Set Fence')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#FFFFFF')
-        .backgroundColor('#1E1E1E')
-        .width('72%')
-        .height(38)
-        .borderRadius(19)
-        .onClick(() => {
-          this.locationError = '';
-          this.gpsAccuracy = -1;
-          this.page = AppPage.SET_FENCE;
-        })
+      // ── Row 2 — MANAGE GEOFENCE ─────────────────────────────────────
+      // Icon: 📍 location pin — represents the home anchor point.
+      Row({ space: 10 }) {
+        Text('📍')
+          .fontSize(16)
+          .width(28)
+          .height(28)
+          .borderRadius(14)
+          .backgroundColor('#252525')
+          .textAlign(TextAlign.Center)
+        Column({ space: 2 }) {
+          Text('MANAGE GEOFENCE')
+            .fontSize(12)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+          Text(this.hasAnchor ? '1 Active Fence' : 'No fence set')
+            .fontSize(10)
+            .fontColor('#9CA3AF')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('92%')
+      .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+      .borderRadius(12)
+      .backgroundColor('#1A1A1A')
+      .onClick(() => {
+        this.locationError = '';
+        this.gpsAccuracy = -1;
+        this.page = AppPage.SET_FENCE;
+      })
 
-      Button('Check Location')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#FFFFFF')
-        .backgroundColor('#1E1E1E')
-        .width('72%')
-        .height(38)
-        .borderRadius(19)
-        .onClick(() => {
-          this.fetchCurrentLocation();
-          this.page = AppPage.CHECK_LOCATION;
-        })
+      // ── Row 3 — LIVE TRACKING ───────────────────────────────────────
+      // Icon: 🎯 target — represents active GPS tracking.
+      Row({ space: 10 }) {
+        Text('🎯')
+          .fontSize(16)
+          .width(28)
+          .height(28)
+          .borderRadius(14)
+          .backgroundColor('#252525')
+          .textAlign(TextAlign.Center)
+        Column({ space: 2 }) {
+          Text('LIVE TRACKING')
+            .fontSize(12)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+          Text(this.distanceLabel())
+            .fontSize(10)
+            .fontColor('#9CA3AF')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('92%')
+      .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+      .borderRadius(12)
+      .backgroundColor('#1A1A1A')
+      .onClick(() => {
+        this.fetchCurrentLocation();
+        this.page = AppPage.CHECK_LOCATION;
+      })
 
-      Button('Community Card')
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#FFFFFF')
-        .backgroundColor('#1E1E1E')
-        .width('72%')
-        .height(38)
-        .borderRadius(19)
-        .onClick(() => {
-          router.pushUrl({ url: 'pages/CommunityCard' });
-        })
+      // ── Row 4 — COMMUNITY HUB ───────────────────────────────────────
+      // Icon: 👥 two people — represents emergency contacts.
+      Row({ space: 10 }) {
+        Text('👥')
+          .fontSize(16)
+          .width(28)
+          .height(28)
+          .borderRadius(14)
+          .backgroundColor('#252525')
+          .textAlign(TextAlign.Center)
+        Column({ space: 2 }) {
+          Text('COMMUNITY CARD')
+            .fontSize(12)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+          Text('Personal Information')
+            .fontSize(10)
+            .fontColor('#9CA3AF')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('92%')
+      .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+      .borderRadius(12)
+      .backgroundColor('#1A1A1A')
+      .onClick(() => {
+        router.pushUrl({ url: 'pages/CommunityCard' });
+      })
 
-
-      // "Simulate Fall" button intentionally removed from this screen.
-      // Access it via the debug panel (long-press ANCHOR title for 3 s).
+      // Simulate Fall removed — access via debug panel (long-press ANCHOR title).
 
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .padding({ left: 20, right: 20, top: 8, bottom: 8 })
+    .padding({ left: 8, right: 8, top: 5, bottom: 5 })
   }
 
   // ------------------------------------------------------------------
