@@ -70,12 +70,12 @@ struct CommunityCard {
     emergencyContact: {
       name: 'Daniel Tan',
       relationship: 'Son',
-      phone: '+65 xxxx xxxx'
+      phone: '+65 9173 4826'
     },
     secondaryContact: {
       name: 'Lim Siew Hoon',
       relationship: 'Neighbor',
-      phone: '+65 xxxx xxxx'
+      phone: '+65 8264 3951'
     },
     bloodType: 'O+',
     allergies: ['Penicillin', 'Peanuts'],
@@ -288,9 +288,11 @@ struct CommunityCard {
     .alignItems(HorizontalAlign.Center)
     .padding({ left: 10, right: 10, top: 6, bottom: 6 })
     .backgroundColor('#1A1A1A')
-    .borderRadius(12)      .onClick(() => {
-        this.callContact(this.displayEmergencyName, this.displayEmergencyPhone);
-      })  }
+    .borderRadius(12)
+    .onClick(() => {
+      this.callContact(this.displayEmergencyName, this.displayEmergencyPhone);
+    })
+  }
 
   @Builder
   buildSecondaryContactRow() {
