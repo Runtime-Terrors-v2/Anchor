@@ -231,7 +231,7 @@ struct CommunityCard {
   private callContact(name: string, phone: string): void {
     const digits: string = phone.replace(/[^\d+]/g, '');
     promptAction.showToast({
-      message: 'Calling ' + name + ' (' + phone + ')... [Simulation]',
+      message: 'Calling ' + name + ' (' + phone + ')...',
       duration: 3000
     });
     call.makeCall(digits).catch((err: BusinessError) => {
