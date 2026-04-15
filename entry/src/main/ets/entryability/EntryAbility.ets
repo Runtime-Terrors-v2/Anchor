@@ -42,12 +42,14 @@ export default class EntryAbility extends UIAbility {
     });
   }
 
-  // Requests precise + coarse location permissions at runtime.
-  // HarmonyOS requires both to be declared and requested together.
+  // Requests precise + coarse location and call permissions at runtime.
+  // HarmonyOS requires both location permissions to be declared and requested together.
+  // PLACE_CALL is required for CommunityCard's tap-to-call feature.
   private requestLocationPermissions(): void {
     const permissions: Permissions[] = [
       'ohos.permission.LOCATION',
-      'ohos.permission.APPROXIMATELY_LOCATION'
+      'ohos.permission.APPROXIMATELY_LOCATION',
+      'ohos.permission.PLACE_CALL'
     ];
 
     const atManager = abilityAccessCtrl.createAtManager();
