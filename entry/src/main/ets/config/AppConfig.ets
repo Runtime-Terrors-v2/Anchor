@@ -82,40 +82,32 @@ export class AppConfig {
   // abandon the candidate after this many ms to avoid the detector getting stuck.
   static readonly ML_POST_TIMEOUT_MS: number = 5000;
 
-  // --- Scoring weights ---
-  // Each weight scales one feature's contribution to the final fall score.
-  // Must sum to 1.0. Impact and stillness carry more weight — they are the
-  // primary biomechanical signatures of a fall.
-  static readonly ML_W_IMPACT: number     = 0.40; // peak impact magnitude
-  static readonly ML_W_STILLNESS: number  = 0.35; // post-fall mean net-accel (low = still)
-  static readonly ML_W_VARIANCE: number   = 0.15; // post-fall variance (low = sustained stillness)
-  static readonly ML_W_PRE_ENERGY: number = 0.10; // pre-fall activity level (low = not exercising)
+  // --- StandardScaler parameters (fitted on SisFall training set) ---
+  // Applied at inference time: z_i = (feature_i - mean_i) / scale_i
+  // Feature order: [impactPeak, preEnergy, postStillness, postVariance]
+  static readonly ML_SCALER_MEAN_0: number  = 44.97959297; // impactPeak mean  (m/s²)
+  static readonly ML_SCALER_MEAN_1: number  =  2.64562076; // preEnergy mean   (m/s²)
+  static readonly ML_SCALER_MEAN_2: number  =  1.57986326; // postStillness mean (m/s²)
+  static readonly ML_SCALER_MEAN_3: number  = 15.89728318; // postVariance mean
 
-  // --- Feature normalizers ---
-  // Each normalizer maps a raw feature value to the [0, 1] score range.
-  // Tuned from published wearable fall detection literature.
-  // To raise sensitivity (catch more falls, more false positives): lower thresholds.
-  // To raise specificity (fewer false positives): raise thresholds.
+  static readonly ML_SCALER_SCALE_0: number = 37.70226793; // impactPeak std
+  static readonly ML_SCALER_SCALE_1: number =  2.00469234; // preEnergy std
+  static readonly ML_SCALER_SCALE_2: number =  1.43206870; // postStillness std
+  static readonly ML_SCALER_SCALE_3: number = 26.19636974; // postVariance std
 
-  // Impact peak normalizer: a magnitude of this value (m/s²) maps to score 1.0.
-  // FALL_IMPACT_THRESHOLD is 25 m/s², so a typical 28 m/s² fall scores ~0.70.
-  static readonly ML_IMPACT_NORMALIZER: number     = 40;
-
-  // Stillness normalizer: net-accel of this value means "completely active" → score 0.
-  // A person lying flat is typically < 0.3 m/s² net, scoring close to 1.0.
-  static readonly ML_STILLNESS_NORMALIZER: number  = 2.0;
-
-  // Variance normalizer: post-impact variance of this value means "jittery" → score 0.
-  // Sustained stillness produces variance < 0.05, scoring close to 1.0.
-  static readonly ML_VARIANCE_NORMALIZER: number   = 0.5;
-
-  // Pre-energy normalizer: mean net-accel of this value means "vigorous activity" → score 0.
-  // A seated or slow-walking senior is typically < 1.0 m/s², scoring close to 1.0.
-  static readonly ML_PRE_ENERGY_NORMALIZER: number = 3.0;
+  // --- Logistic regression coefficients (trained on SisFall) ---
+  // logit = COEF_0*z0 + COEF_1*z1 + COEF_2*z2 + COEF_3*z3 + BIAS
+  // p_fall = 1 / (1 + exp(-logit))
+  static readonly ML_COEF_0: number =  5.98325690; // impactPeak weight  (positive: high impact → fall)
+  static readonly ML_COEF_1: number = -0.69412253; // preEnergy weight   (negative: active pre-fall → less likely)
+  static readonly ML_COEF_2: number = -0.30814991; // postStillness weight (negative: still post-fall → fall)
+  static readonly ML_COEF_3: number = -0.76297909; // postVariance weight (negative: low variance → fall)
+  static readonly ML_BIAS:   number =  0.93321737;
 
   // --- Decision threshold ---
-  // Minimum weighted score [0.0 – 1.0] required to confirm a fall.
-  // 0.55 is tuned for seniors (CLAUDE.md: false negatives are dangerous —
-  // err toward detecting real falls over avoiding false positives).
-  static readonly ML_FALL_SCORE_THRESHOLD: number = 0.55;
+  // p_fall >= this value → fall confirmed.
+  // 0.5 = balanced (default logistic regression cutoff).
+  // Lower (e.g. 0.35) to improve recall at the cost of more false positives —
+  // appropriate for seniors where missing a real fall is the greater risk.
+  static readonly ML_FALL_SCORE_THRESHOLD: number = 0.5;
 }

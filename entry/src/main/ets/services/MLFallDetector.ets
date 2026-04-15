@@ -210,11 +210,17 @@ export class MLFallDetector implements FallDetector {
   }
 
   // ---------------------------------------------------------------------------
-  // Classifier
+  // Classifier — logistic regression inference
   // ---------------------------------------------------------------------------
 
-  // Extract features from the captured windows, compute a weighted fall score,
-  // and fire a fall event if the score meets the threshold.
+  // Extract features from the captured windows, run logistic regression inference,
+  // and fire a fall event if the predicted fall probability meets the threshold.
+  //
+  // Inference steps (mirrors sklearn's predict_proba at runtime):
+  //   1. Standardise each feature using the training-set scaler parameters.
+  //   2. Compute the linear combination (logit) with the trained coefficients.
+  //   3. Apply the sigmoid function to get a fall probability in [0, 1].
+  //   4. Compare against ML_FALL_SCORE_THRESHOLD.
   private classifyAndReset(): void {
     const features: FallFeatures = this.extractFeatures();
 
@@ -222,47 +228,35 @@ export class MLFallDetector implements FallDetector {
       'Features — impactPeak: %.2f  preEnergy: %.2f  postStillness: %.2f  postVariance: %.2f',
       features.impactPeak, features.preEnergy, features.postStillness, features.postVariance);
 
-    // --- Component scores [0, 1] ---
-    // Each feature is normalised into a 0–1 score where 1.0 = maximally fall-like.
-    // Normalizers are configured in AppConfig — see comments there for tuning guidance.
+    // Step 1 — standardise features using scaler parameters from training.
+    // z_i = (feature_i - mean_i) / scale_i
+    const z0: number = (features.impactPeak    - AppConfig.ML_SCALER_MEAN_0) / AppConfig.ML_SCALER_SCALE_0;
+    const z1: number = (features.preEnergy     - AppConfig.ML_SCALER_MEAN_1) / AppConfig.ML_SCALER_SCALE_1;
+    const z2: number = (features.postStillness - AppConfig.ML_SCALER_MEAN_2) / AppConfig.ML_SCALER_SCALE_2;
+    const z3: number = (features.postVariance  - AppConfig.ML_SCALER_MEAN_3) / AppConfig.ML_SCALER_SCALE_3;
 
-    // High impact peak → score approaches 1.0
-    const impactScore: number = Math.min(
-      features.impactPeak / AppConfig.ML_IMPACT_NORMALIZER, 1.0);
+    // Step 2 — linear combination with trained coefficients.
+    // logit = w0*z0 + w1*z1 + w2*z2 + w3*z3 + bias
+    const logit: number =
+      AppConfig.ML_COEF_0 * z0 +
+      AppConfig.ML_COEF_1 * z1 +
+      AppConfig.ML_COEF_2 * z2 +
+      AppConfig.ML_COEF_3 * z3 +
+      AppConfig.ML_BIAS;
 
-    // Low post-mean (person lying still) → score approaches 1.0
-    const stillnessScore: number = Math.max(
-      1.0 - features.postStillness / AppConfig.ML_STILLNESS_NORMALIZER, 0.0);
-
-    // Low post-variance (sustained stillness) → score approaches 1.0
-    const varianceScore: number = Math.max(
-      1.0 - features.postVariance / AppConfig.ML_VARIANCE_NORMALIZER, 0.0);
-
-    // Low pre-energy (not vigorously active before impact) → score approaches 1.0
-    const preEnergyScore: number = Math.max(
-      1.0 - features.preEnergy / AppConfig.ML_PRE_ENERGY_NORMALIZER, 0.0);
-
-    // --- Weighted sum ---
-    // Weights are configured in AppConfig (must sum to 1.0).
-    // Impact and stillness carry the most weight — they are the primary fall signatures.
-    const score: number =
-      AppConfig.ML_W_IMPACT    * impactScore    +
-      AppConfig.ML_W_STILLNESS * stillnessScore +
-      AppConfig.ML_W_VARIANCE  * varianceScore  +
-      AppConfig.ML_W_PRE_ENERGY * preEnergyScore;
+    // Step 3 — sigmoid: maps logit to a fall probability in [0, 1].
+    const pFall: number = 1.0 / (1.0 + Math.exp(-logit));
 
     hilog.info(DOMAIN, 'MLFallDetector',
-      'Component scores — impact: %.2f  still: %.2f  var: %.2f  preE: %.2f → total: %.2f (threshold: %.2f)',
-      impactScore, stillnessScore, varianceScore, preEnergyScore,
-      score, AppConfig.ML_FALL_SCORE_THRESHOLD);
+      'Standardised — z0: %.2f  z1: %.2f  z2: %.2f  z3: %.2f  logit: %.3f  p(fall): %.3f  threshold: %.2f',
+      z0, z1, z2, z3, logit, pFall, AppConfig.ML_FALL_SCORE_THRESHOLD);
 
-    if (score >= AppConfig.ML_FALL_SCORE_THRESHOLD) {
-      hilog.warn(DOMAIN, 'MLFallDetector', 'Fall confirmed — score %.2f', score);
+    if (pFall >= AppConfig.ML_FALL_SCORE_THRESHOLD) {
+      hilog.warn(DOMAIN, 'MLFallDetector', 'Fall confirmed — p(fall)=%.3f', pFall);
       this.fireFallEvent();
     } else {
       hilog.info(DOMAIN, 'MLFallDetector',
-        'Impact discarded — score %.2f below threshold %.2f',
-        score, AppConfig.ML_FALL_SCORE_THRESHOLD);
+        'Impact discarded — p(fall)=%.3f below threshold %.2f', pFall, AppConfig.ML_FALL_SCORE_THRESHOLD);
     }
 
     this.reset();
