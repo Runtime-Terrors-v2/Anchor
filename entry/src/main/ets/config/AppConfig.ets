@@ -62,4 +62,52 @@ export class AppConfig {
 
   // The patient must remain still for this many ms after the spike to confirm a fall
   static readonly FALL_STILLNESS_DURATION: number = 2000;
+
+  // ---------------------------------------------------------------------------
+  // ML Fall Detection — MLFallDetector
+  // ---------------------------------------------------------------------------
+  // These values control the feature extractor and weighted scoring classifier.
+  // They are intentionally separated from the threshold-based FALL_* values above
+  // so both detectors can be tuned independently.
+
+  // Number of pre-impact samples to keep in the sliding window.
+  // At ~5 Hz (normal sensor interval), 5 samples ≈ 1 second of pre-fall context.
+  static readonly ML_PRE_WINDOW_SIZE: number = 5;
+
+  // Number of post-impact samples to collect before classifying.
+  // 10 samples ≈ 2 seconds — enough to confirm sustained post-fall stillness.
+  static readonly ML_POST_WINDOW_SIZE: number = 10;
+
+  // Safety timeout (ms): if post-impact samples stop arriving (e.g. sensor fault),
+  // abandon the candidate after this many ms to avoid the detector getting stuck.
+  static readonly ML_POST_TIMEOUT_MS: number = 5000;
+
+  // --- StandardScaler parameters (fitted on SisFall training set) ---
+  // Applied at inference time: z_i = (feature_i - mean_i) / scale_i
+  // Feature order: [impactPeak, preEnergy, postStillness, postVariance]
+  static readonly ML_SCALER_MEAN_0: number  = 44.97959297; // impactPeak mean  (m/s²)
+  static readonly ML_SCALER_MEAN_1: number  =  2.64562076; // preEnergy mean   (m/s²)
+  static readonly ML_SCALER_MEAN_2: number  =  1.57986326; // postStillness mean (m/s²)
+  static readonly ML_SCALER_MEAN_3: number  = 15.89728318; // postVariance mean
+
+  static readonly ML_SCALER_SCALE_0: number = 37.70226793; // impactPeak std
+  static readonly ML_SCALER_SCALE_1: number =  2.00469234; // preEnergy std
+  static readonly ML_SCALER_SCALE_2: number =  1.43206870; // postStillness std
+  static readonly ML_SCALER_SCALE_3: number = 26.19636974; // postVariance std
+
+  // --- Logistic regression coefficients (trained on SisFall) ---
+  // logit = COEF_0*z0 + COEF_1*z1 + COEF_2*z2 + COEF_3*z3 + BIAS
+  // p_fall = 1 / (1 + exp(-logit))
+  static readonly ML_COEF_0: number =  5.98325690; // impactPeak weight  (positive: high impact → fall)
+  static readonly ML_COEF_1: number = -0.69412253; // preEnergy weight   (negative: active pre-fall → less likely)
+  static readonly ML_COEF_2: number = -0.30814991; // postStillness weight (negative: still post-fall → fall)
+  static readonly ML_COEF_3: number = -0.76297909; // postVariance weight (negative: low variance → fall)
+  static readonly ML_BIAS:   number =  0.93321737;
+
+  // --- Decision threshold ---
+  // p_fall >= this value → fall confirmed.
+  // 0.5 = balanced (default logistic regression cutoff).
+  // Lower (e.g. 0.35) to improve recall at the cost of more false positives —
+  // appropriate for seniors where missing a real fall is the greater risk.
+  static readonly ML_FALL_SCORE_THRESHOLD: number = 0.5;
 }

@@ -4,7 +4,8 @@ import { AppConfig } from '../config/AppConfig';
 import { MotionDetector } from '../services/MotionDetector';
 import { MockMotionDetector } from '../services/MockMotionDetector';
 import { RealMotionDetector } from '../services/RealMotionDetector';
-import { FallDetector, MockFallDetector, RealFallDetector } from '../services/FallDetector';
+import { FallDetector, MockFallDetector } from '../services/FallDetector';
+import { MLFallDetector } from '../services/MLFallDetector';
 import common from '@ohos.app.ability.common';
 import geoLocationManager from '@ohos.geoLocationManager';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -102,7 +103,7 @@ struct Index {
       fallDet = mockF;
     } else {
       motionDet = new RealMotionDetector();
-      fallDet = new RealFallDetector();
+      fallDet = new MLFallDetector();
     }
 
     this.geofenceService = new GeofenceService(
