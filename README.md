@@ -75,19 +75,23 @@ The caregiver dashboard shows watch connection status, alert count for the week,
 
 **Watch App — Full Demo**
 
-<video src="docs/screenshots/Demo_1.mp4" controls width="360"></video>
+![Watch app demo](docs/screenshots/Demo_1.gif)
 
 **Caregiver Phone App**
 
-<video src="docs/screenshots/Demo_Mobile.mp4" controls width="360"></video>
+![Mobile app demo](docs/screenshots/Demo_Mobile.gif)
 
 **Geofence State Transitions (SAFE → DRIFTING → ALERT)**
 
-<video src="docs/screenshots/ui_geofence.mp4" controls width="360"></video>
+<p align="center">
+  <img src="docs/screenshots/ui_geofence.gif" alt="Geofence state transitions" width="300"/>
+</p>
 
 **Community Card (First-Responder View)**
 
-<video src="docs/screenshots/ui_community_card.mp4" controls width="360"></video>
+<p align="center">
+  <img src="docs/screenshots/ui_community_card.gif" alt="Community card view" width="300"/>
+</p>
 
 ---
 
