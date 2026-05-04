@@ -53,6 +53,44 @@ Long-press the ANCHOR title for 3 seconds to access a hidden debug panel to simu
 
 ---
 
+## Screenshots & Demos
+
+### Watch App
+
+<p align="center">
+  <img src="docs/screenshots/ui_main_menu.png" alt="Anchor watch UI — STATUS: SAFE" width="300"/>
+</p>
+
+The watch displays the current geofence state (`SAFE` / `DRIFTING` / `ALERT`) at a glance, with menu access to live tracking, geofence management, and the community card.
+
+### Caregiver Phone App
+
+<p align="center">
+  <img src="docs/screenshots/ui_mobile_app.png" alt="Anchor caregiver phone dashboard" width="300"/>
+</p>
+
+The caregiver dashboard shows watch connection status, alert count for the week, and quick links to priority contacts and alert history. A red banner fires immediately if the watch goes offline.
+
+### Video Demos
+
+**Watch App — Full Demo**
+
+<video src="docs/screenshots/Demo_1.mp4" controls width="360"></video>
+
+**Caregiver Phone App**
+
+<video src="docs/screenshots/Demo_Mobile.mp4" controls width="360"></video>
+
+**Geofence State Transitions (SAFE → DRIFTING → ALERT)**
+
+<video src="docs/screenshots/ui_geofence.mp4" controls width="360"></video>
+
+**Community Card (First-Responder View)**
+
+<video src="docs/screenshots/ui_community_card.mp4" controls width="360"></video>
+
+---
+
 ## Architecture
 
 ```
